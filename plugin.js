@@ -729,7 +729,7 @@
       candidate.title ||
       '';
 
-    return matchesMovie({ filename: label, name: label }, movie);
+    return scoreMovieAgainstFilename(movie, label) >= MIN_MATCH_SCORE;
   }
 
   function buildResultRow(candidate, source) {
@@ -763,8 +763,27 @@
 
     return searchTorrentCandidates(movie)
       .then(function (candidates) {
-        var matched = candidates.filter(function (candidate) {
-          return matchesTorrentCandidate(candidate, movie);
+        var matched = [];
+
+        candidates.forEach(function (candidate) {
+          var label =
+            candidate.Title ||
+            candidate.filename ||
+            candidate.name ||
+            candidate.title ||
+            '';
+          var score = scoreMovieAgainstFilename(movie, label);
+
+          logMatchScore(movie, label, score);
+
+          if (score >= MIN_MATCH_SCORE) {
+            candidate._matchScore = score;
+            matched.push(candidate);
+          }
+        });
+
+        matched.sort(function (a, b) {
+          return (b._matchScore || 0) - (a._matchScore || 0);
         });
 
         console.log('[AllDebrid] title-matched candidates', matched.length);
@@ -783,6 +802,7 @@
             if (!instantMap[candidate.hash]) return;
 
             var row = buildResultRow(candidate, 'instant');
+            row.matchScore = candidate._matchScore;
             var key = row.hash || row.title;
             if (!key || seen[key]) return;
 
@@ -791,6 +811,8 @@
           });
 
           results.sort(function (a, b) {
+            var scoreDiff = (b.matchScore || 0) - (a.matchScore || 0);
+            if (scoreDiff) return scoreDiff;
             return parseInt(b.seeders, 10) - parseInt(a.seeders, 10);
           });
 
@@ -835,20 +857,67 @@
     });
   }
 
+  var MIN_MATCH_SCORE = 0.45;
+  var MATCH_STOP_WORDS = {
+    the: 1,
+    a: 1,
+    an: 1,
+    and: 1,
+    or: 1,
+    but: 1,
+    in: 1,
+    on: 1,
+    at: 1,
+    to: 1,
+    for: 1,
+    of: 1,
+    with: 1,
+    from: 1,
+    by: 1,
+    is: 1,
+    are: 1,
+    as: 1,
+    it: 1,
+    its: 1,
+    vs: 1,
+    la: 1,
+    le: 1,
+    les: 1,
+    el: 1,
+    los: 1,
+    las: 1,
+    der: 1,
+    die: 1,
+    das: 1
+  };
+
   function normalizeTitle(str) {
     return String(str || '')
       .toLowerCase()
       .replace(/[''`]/g, '')
       .replace(/\./g, ' ')
-      .replace(/(\w)\s+s\b/g, '$1s')
-      .replace(/[^a-z0-9\s\u0400-\u04ff]/gi, '')
+      .replace(/[^a-z0-9\s\u0400-\u04ff]/gi, ' ')
       .replace(/\s+/g, ' ')
       .trim();
   }
 
-  function containsBidirectional(a, b) {
-    if (!a || !b) return false;
-    return a.indexOf(b) >= 0 || b.indexOf(a) >= 0;
+  function collapseSpaces(str) {
+    return String(str || '').replace(/\s+/g, '');
+  }
+
+  function getSignificantWords(normTitle) {
+    if (!normTitle) return [];
+
+    return normTitle.split(' ').filter(function (word) {
+      if (!word || word.length < 3) return false;
+      if (MATCH_STOP_WORDS[word]) return false;
+      if (/^\d{4}$/.test(word)) return false;
+      return true;
+    });
+  }
+
+  function getCompactTitle(normTitle) {
+    return getSignificantWords(normTitle).join('');
   }
 
   function collectTitleVariants(raw) {
@@ -857,12 +926,14 @@
 
     function add(part) {
       var norm = normalizeTitle(part);
-      if (!norm || norm.length < 4 || seen[norm]) return;
+      if (!norm || norm.length < 3 || seen[norm]) return;
       seen[norm] = true;
       variants.push(norm);
     }
 
     if (!raw) return variants;
+
+    add(raw);
 
     String(raw)
       .split(/[:;|]/)
@@ -892,24 +963,67 @@
     return variants;
   }
 
-  function titleMatchesFilename(titleVariants, normFilename) {
-    for (var i = 0; i < titleVariants.length; i++) {
-      if (containsBidirectional(normFilename, titleVariants[i])) {
-        return true;
+  function scoreTitleAgainstFilename(normTitle, normFilename) {
+    if (!normTitle || !normFilename) return 0;
+
+    var score = 0;
+
+    if (normFilename.indexOf(normTitle) >= 0) {
+      score = 1;
+    }
+
+    var compactTitle = getCompactTitle(normTitle);
+    if (compactTitle.length >= 4 && collapseSpaces(normFilename).indexOf(compactTitle) >= 0) {
+      score = Math.max(score, 0.95);
+    }
+
+    var words = getSignificantWords(normTitle);
+    if (!words.length) {
+      return score;
+    }
+
+    var matched = 0;
+    for (var i = 0; i < words.length; i++) {
+      if (normFilename.indexOf(words[i]) >= 0) {
+        matched++;
       }
     }
-    return false;
-  }
 
-  function matchesMovie(magnet, movie) {
-    var filename = magnet && (magnet.filename || magnet.name) ? magnet.filename || magnet.name : '';
-    var normFilename = normalizeTitle(filename);
+    var wordScore = matched / words.length;
+    var minRequired = words.length >= 2 ? 2 : 1;
 
-    if (!normFilename) {
-      return false;
+    if (matched < minRequired) {
+      wordScore *= 0.35;
     }
 
-    return titleMatchesFilename(movieTitleVariants(movie), normFilename);
+    score = Math.max(score, wordScore);
+
+    if (words.length >= 2 && matched === 1 && score < 0.55) {
+      score *= 0.5;
+    }
+
+    return Math.min(1, score);
+  }
+
+  function scoreMovieAgainstFilename(movie, filename) {
+    var normFilename = normalizeTitle(filename);
+    if (!normFilename) return 0;
+
+    var best = 0;
+    var variants = movieTitleVariants(movie);
+
+    for (var i = 0; i < variants.length; i++) {
+      best = Math.max(best, scoreTitleAgainstFilename(variants[i], normFilename));
+    }
+
+    return best;
+  }
+
+  function logMatchScore(movie, candidate, score) {
+    console.log('[MATCH SCORE]');
+    console.log('movie:', movie.title || movie.name || '');
+    console.log('candidate:', candidate);
+    console.log('score:', score);
   }
 
   function filterMagnetsForMovie(magnets, movie) {
@@ -930,25 +1044,28 @@
       return [];
     }
 
-    var matched = [];
+    var scored = [];
 
     for (var i = 0; i < list.length; i++) {
       var m = list[i];
       var filename = m && (m.filename || m.name) ? m.filename || m.name : '';
+      var score = scoreMovieAgainstFilename(movie, filename);
 
-      console.log('[MATCH] filename', filename);
+      logMatchScore(movie, filename, score);
 
-      if (matchesMovie(m, movie)) {
-        console.log('[MATCH FOUND]', filename);
-        matched.push(m);
-      } else {
-        console.log('[MATCH SKIP]', filename);
+      if (score >= MIN_MATCH_SCORE) {
+        m._matchScore = score;
+        scored.push(m);
       }
     }
 
-    console.log('[MATCH] matched count', matched.length);
+    scored.sort(function (a, b) {
+      return (b._matchScore || 0) - (a._matchScore || 0);
+    });
 
-    return matched;
+    console.log('[MATCH] matched count', scored.length);
+
+    return scored;
   }
 
   function flattenMagnetFiles(nodes, pathPrefix) {
