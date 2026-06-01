@@ -339,7 +339,7 @@
   }
 
   function fetchIndexerResults(query) {
-    return new Promise(function (resolve, reject) {
+    return new Promise(function (resolve) {
       var network = new Lampa.Reguest();
       var url =
         'https://apibay.org/q.php?q=' +
@@ -350,12 +350,13 @@
         url,
         function (json) {
           if (!Array.isArray(json)) {
-            resolve([]);
+            resolve({ failed: false, rows: [] });
             return;
           }
 
-          resolve(
-            json
+          resolve({
+            failed: false,
+            rows: json
               .filter(function (row) {
                 return row && row.id && row.id !== '0';
               })
@@ -370,10 +371,12 @@
                   raw: row
                 };
               })
-          );
+          });
         },
         function (a, c) {
-          reject(new Error(network.errorDecode(a, c) || 'Indexer search failed'));
+          var msg = network.errorDecode(a, c) || 'Indexer search failed';
+          console.warn('[AllDebrid] Indexer failed, fallback to ready magnets', msg, a, c);
+          resolve({ failed: true, rows: [] });
         }
       );
     });
@@ -382,18 +385,23 @@
   function checkInstantAvailability(hashes) {
     if (!hashes.length) return Promise.resolve([]);
 
-    return adRequest('/magnet/instant', { 'magnets[]': hashes }, 'GET').then(function (data) {
-      var magnets = (data && data.magnets) || [];
-      var cached = {};
+    return adRequest('/magnet/instant', { 'magnets[]': hashes }, 'GET')
+      .then(function (data) {
+        var magnets = (data && data.magnets) || [];
+        var cached = {};
 
-      magnets.forEach(function (m) {
-        if (m && m.hash && m.instant) {
-          cached[String(m.hash).toLowerCase()] = m;
-        }
+        magnets.forEach(function (m) {
+          if (m && m.hash && m.instant) {
+            cached[String(m.hash).toLowerCase()] = m;
+          }
+        });
+
+        return cached;
+      })
+      .catch(function (err) {
+        console.warn('[AllDebrid] instant check failed, continuing', err);
+        return {};
       });
-
-      return cached;
-    });
   }
 
   function normalizeMagnetsList(readyList) {
@@ -450,10 +458,15 @@
     return fetchReadyMagnets().then(function (readyList) {
         console.log('[AllDebrid] ready magnets', readyList);
 
-        var magnets = normalizeMagnetsList(readyList);
+        var magnets = Array.isArray(readyList) ? readyList : Object.values(readyList || {});
 
-        magnets.forEach(function (m) {
-          if (!matchesMovie(m.filename, info)) return;
+        console.log('[AllDebrid] normalized magnets', magnets.length);
+
+        var readyMagnetsRaw = magnets;
+        var indexerFailed = false;
+
+        function pushReadyMagnet(m, matchedOnly) {
+          if (matchedOnly && !matchesMovie(m.filename, info)) return;
 
           pushResult({
             title: m.filename,
@@ -465,6 +478,10 @@
             source: 'alldebrid_library',
             raw: m
           });
+        }
+
+        readyMagnetsRaw.forEach(function (m) {
+          pushReadyMagnet(m, true);
         });
 
         var chain = Promise.resolve();
@@ -475,8 +492,14 @@
               console.log('[AllDebrid] indexer query', query);
               return fetchIndexerResults(query);
             })
-            .then(function (rows) {
+            .then(function (indexerResult) {
+              if (indexerResult && indexerResult.failed) indexerFailed = true;
+
+              var rows = (indexerResult && indexerResult.rows) || [];
+
               console.log('[AllDebrid] indexer results', rows);
+
+              if (!rows.length) return;
 
               var hashes = rows.map(function (r) {
                 return r.hash;
@@ -500,12 +523,29 @@
                   });
                 });
               });
+            })
+            .catch(function (err) {
+              indexerFailed = true;
+              console.warn('[AllDebrid] Indexer failed, fallback to ready magnets', err);
             });
         });
 
-        return chain.then(function () {
-          return results;
-        });
+        return chain
+          .catch(function (err) {
+            indexerFailed = true;
+            console.warn('[AllDebrid] Indexer failed, fallback to ready magnets', err);
+          })
+          .then(function () {
+            if (indexerFailed && readyMagnetsRaw.length) {
+              console.warn('[AllDebrid] Indexer failed, fallback to ready magnets');
+
+              readyMagnetsRaw.forEach(function (m) {
+                pushReadyMagnet(m, false);
+              });
+            }
+
+            return results;
+          });
       });
   }
 
