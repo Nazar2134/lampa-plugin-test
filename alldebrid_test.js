@@ -84,8 +84,29 @@
     }
 
     if (Lampa.Torrent) {
-      wrapMethod(Lampa.Torrent, 'start', 'Torrent');
-      wrapMethod(Lampa.Torrent, 'open', 'Torrent');
+      Object.getOwnPropertyNames(Lampa.Torrent).forEach(function (name) {
+        if (typeof Lampa.Torrent[name] !== 'function') return;
+
+        var original = Lampa.Torrent[name];
+
+        Lampa.Torrent[name] = function () {
+          console.group('[AllDebrid] Torrent.' + name);
+
+          console.log('args.length', arguments.length);
+
+          for (var i = 0; i < arguments.length; i++) {
+            console.log('arg[' + i + ']', arguments[i]);
+          }
+
+          console.trace();
+
+          console.groupEnd();
+
+          return original.apply(this, arguments);
+        };
+
+        console.log('[AllDebrid] hooked: Torrent.' + name);
+      });
     } else {
       console.log('[AllDebrid] Lampa.Torrent not found');
     }
