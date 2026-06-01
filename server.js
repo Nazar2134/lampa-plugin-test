@@ -2154,7 +2154,47 @@
     return adRequest('/link/unlock', { link: link }, 'POST');
   }
 
-  function openLampaPlayer(url, movie, info, fileName) {
+  function getTorrentioPlayUrl(stream) {
+    stream = stream || {};
+
+    if (stream.externalUrl) {
+      return String(stream.externalUrl).trim();
+    }
+
+    return String(stream.url || '').trim();
+  }
+
+  /**
+   * Torrentio playback: pass stream URL directly to Lampa.Player.
+   * No fetch / XMLHttpRequest / HEAD — browser CORS blocks debrid.it preflight,
+   * but the native player can open the URL (and follow redirects) directly.
+   */
+  function playTorrentioStream(stream, movie, info, row) {
+    stream = stream || {};
+    var playUrl = getTorrentioPlayUrl(stream);
+
+    if (!playUrl) {
+      Lampa.Noty.show('Stream URL is missing');
+      return;
+    }
+
+    console.log('[TORRENTIO] direct play url (no preflight)', playUrl);
+
+    var extra = {
+      torrentio: true,
+      name: (row && row.title) || stream.name || stream.title || info.title
+    };
+
+    if (stream.behaviorHints && stream.behaviorHints.proxyHeaders) {
+      extra.headers = stream.behaviorHints.proxyHeaders;
+    }
+
+    openLampaPlayer(playUrl, movie, info, extra.name, extra);
+  }
+
+  function openLampaPlayer(url, movie, info, fileName, extra) {
+    extra = extra || {};
+
     console.log('[AllDebrid] stream url', url);
     console.log('[AllDebrid] opening player');
 
@@ -2168,11 +2208,23 @@
         throw new Error('Lampa.Player.play not available');
       }
 
-      Lampa.Player.play({
+      var playParams = {
         url: url,
         title: info.title || fileName || 'AllDebrid',
         card: movie
-      });
+      };
+
+      if (extra.headers) {
+        playParams.headers = extra.headers;
+      }
+
+      if (extra.name) {
+        playParams.name = extra.name;
+      }
+
+      console.log('[AllDebrid] Player.play', playParams);
+
+      Lampa.Player.play(playParams);
     } catch (err) {
       console.error('[AllDebrid] player error', err);
       Lampa.Noty.show('Playback failed');
@@ -2226,53 +2278,7 @@
     console.log('[AllDebrid] selected result', row);
 
     if (row && row.source === 'torrentio') {
-      var stream = row.raw || {};
-      var playUrl = row.directUrl || stream.url || stream.externalUrl || '';
-
-      logTorrentioStreamDiagnostics(stream, row);
-
-      if (!playUrl) {
-        Lampa.Noty.show('Stream URL is missing');
-        return;
-      }
-
-      Lampa.Loading.start(function () {
-        Lampa.Loading.stop();
-      });
-
-      runTorrentioPlaybackDiagnostics(stream, playUrl)
-        .then(function () {
-          return resolveTorrentioStreamUrl(playUrl);
-        })
-        .then(function (finalUrl) {
-          console.log('[TORRENTIO] resolved play url (unchanged logic)', finalUrl);
-          return probeTorrentioUrlDiagnostics('resolved-before-player', finalUrl).then(function () {
-            return finalUrl;
-          });
-        })
-        .then(function (finalUrl) {
-          Lampa.Loading.stop();
-
-          if (!finalUrl || isTorrentioResolveUrl(finalUrl)) {
-            Lampa.Noty.show('Unable to resolve stream URL');
-            return;
-          }
-
-          console.log('[TORRENTIO] opening player with (diagnostic)', {
-            finalUrl: finalUrl,
-            streamUrl: stream.url,
-            streamExternalUrl: stream.externalUrl,
-            streamInfoHash: stream.infoHash
-          });
-
-          openLampaPlayer(finalUrl, movie, info, row.title);
-        })
-        .catch(function (err) {
-          Lampa.Loading.stop();
-          console.error('[TORRENTIO] resolve failed', err);
-          Lampa.Noty.show('Unable to resolve stream URL');
-        });
-
+      playTorrentioStream(row.raw || {}, movie, info, row);
       return;
     }
 
