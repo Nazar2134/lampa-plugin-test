@@ -2,10 +2,9 @@
   'use strict';
 
   /**
-   * Architecture (future):
-   * Movie → AllDebrid Search → Result List → Selected → Unlock → Direct URL → Lampa Player
-   * Playback not implemented in this MVP.
+   * Movie → AllDebrid ready magnets → Match → Select → Files → Unlock → Lampa Player
    */
+  var VIDEO_EXT = /\.(mkv|mp4|avi|mov)$/i;
 
   if (window.plugin_alldebrid) return;
   window.plugin_alldebrid = true;
@@ -72,27 +71,6 @@
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
-  }
-
-  function buildSearchQueries(info) {
-    var queries = [];
-    var year = info.release_date ? String(info.release_date).slice(0, 4) : '';
-
-    if (info.imdb_id) {
-      queries.push(String(info.imdb_id).replace(/^tt/i, 'tt'));
-    }
-
-    if (info.title) {
-      queries.push(info.title + (year ? ' ' + year : ''));
-    }
-
-    if (info.original_title && info.original_title !== info.title) {
-      queries.push(info.original_title + (year ? ' ' + year : ''));
-    }
-
-    return queries.filter(function (q, i, arr) {
-      return q && arr.indexOf(q) === i;
-    });
   }
 
   function parseQuality(name) {
@@ -338,72 +316,6 @@
     });
   }
 
-  function fetchIndexerResults(query) {
-    return new Promise(function (resolve) {
-      var network = new Lampa.Reguest();
-      var url =
-        'https://apibay.org/q.php?q=' +
-        encodeURIComponent(query) +
-        '&cat=0';
-
-      network.silent(
-        url,
-        function (json) {
-          if (!Array.isArray(json)) {
-            resolve({ failed: false, rows: [] });
-            return;
-          }
-
-          resolve({
-            failed: false,
-            rows: json
-              .filter(function (row) {
-                return row && row.id && row.id !== '0';
-              })
-              .map(function (row) {
-                return {
-                  title: row.name,
-                  hash: String(row.info_hash || '').toLowerCase(),
-                  size: row.size,
-                  seeders: row.seeders,
-                  quality: parseQuality(row.name),
-                  source: 'indexer',
-                  raw: row
-                };
-              })
-          });
-        },
-        function (a, c) {
-          var msg = network.errorDecode(a, c) || 'Indexer search failed';
-          console.warn('[AllDebrid] Indexer failed, fallback to ready magnets', msg, a, c);
-          resolve({ failed: true, rows: [] });
-        }
-      );
-    });
-  }
-
-  function checkInstantAvailability(hashes) {
-    if (!hashes.length) return Promise.resolve([]);
-
-    return adRequest('/magnet/instant', { 'magnets[]': hashes }, 'GET')
-      .then(function (data) {
-        var magnets = (data && data.magnets) || [];
-        var cached = {};
-
-        magnets.forEach(function (m) {
-          if (m && m.hash && m.instant) {
-            cached[String(m.hash).toLowerCase()] = m;
-          }
-        });
-
-        return cached;
-      })
-      .catch(function (err) {
-        console.warn('[AllDebrid] instant check failed, continuing', err);
-        return {};
-      });
-  }
-
   function normalizeMagnetsList(readyList) {
     console.log('[AllDebrid] readyList type', typeof readyList, Array.isArray(readyList));
 
@@ -429,124 +341,219 @@
     var text = String(name || '').toLowerCase();
     if (!text) return false;
 
-    if (info.imdb_id && text.indexOf(String(info.imdb_id).toLowerCase()) >= 0) return true;
+    var year = info.release_date ? String(info.release_date).slice(0, 4) : '';
+    var hasTitle = false;
 
-    if (info.title && text.indexOf(String(info.title).toLowerCase()) >= 0) return true;
+    if (info.imdb_id && text.indexOf(String(info.imdb_id).toLowerCase()) >= 0) hasTitle = true;
 
-    if (info.original_title && text.indexOf(String(info.original_title).toLowerCase()) >= 0) {
-      return true;
+    if (info.title && text.indexOf(String(info.title).toLowerCase()) >= 0) hasTitle = true;
+
+    if (
+      info.original_title &&
+      text.indexOf(String(info.original_title).toLowerCase()) >= 0
+    ) {
+      hasTitle = true;
     }
 
-    return false;
+    if (!hasTitle) return false;
+
+    if (year && text.indexOf(year) < 0) {
+      if (!(info.imdb_id && text.indexOf(String(info.imdb_id).toLowerCase()) >= 0)) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  function flattenMagnetFiles(nodes, pathPrefix) {
+    var out = [];
+    var prefix = pathPrefix || '';
+
+    (nodes || []).forEach(function (node) {
+      if (!node) return;
+
+      if (node.e && node.e.length) {
+        var folder = node.n ? prefix + node.n + '/' : prefix;
+        out = out.concat(flattenMagnetFiles(node.e, folder));
+      } else if (node.l) {
+        out.push({
+          name: prefix + (node.n || 'unknown'),
+          size: node.s,
+          link: node.l
+        });
+      }
+    });
+
+    return out;
+  }
+
+  function filterVideoFiles(files) {
+    return (files || []).filter(function (f) {
+      return VIDEO_EXT.test(f.name);
+    });
+  }
+
+  function fetchMagnetFiles(magnetId) {
+    return adRequest('/magnet/files', { 'id[]': [String(magnetId)] }, 'POST').then(function (data) {
+      var magnets = normalizeMagnetsList((data && data.magnets) || []);
+      return magnets[0] || { id: magnetId, files: [] };
+    });
+  }
+
+  function unlockLink(link) {
+    return adRequest('/link/unlock', { link: link }, 'POST');
+  }
+
+  function openLampaPlayer(url, movie, info, fileName) {
+    console.log('[AllDebrid] stream url', url);
+    console.log('[AllDebrid] opening player');
+
+    if (!url) {
+      Lampa.Noty.show('Unable to create stream');
+      return;
+    }
+
+    try {
+      if (!Lampa.Player || !Lampa.Player.play) {
+        throw new Error('Lampa.Player.play not available');
+      }
+
+      Lampa.Player.play({
+        url: url,
+        title: info.title || fileName || 'AllDebrid',
+        card: movie
+      });
+    } catch (err) {
+      console.error('[AllDebrid] player error', err);
+      Lampa.Noty.show('Playback failed');
+    }
+  }
+
+  function playVideoFile(file, movie, info) {
+    console.log('[AllDebrid] selected file', file);
+
+    return unlockLink(file.link)
+      .then(function (response) {
+        console.log('[AllDebrid] unlock response', response);
+        Lampa.Loading.stop();
+        openLampaPlayer(response && response.link, movie, info, file.name);
+      })
+      .catch(function (err) {
+        Lampa.Loading.stop();
+        console.error('[AllDebrid] unlock failed', err);
+        Lampa.Noty.show('Unable to create stream');
+      });
+  }
+
+  function showVideoFilePicker(videoFiles, movie, info) {
+    var items = videoFiles.map(function (file) {
+      return {
+        title: file.name,
+        subtitle: formatBytes(file.size),
+        file: file,
+        onSelect: function () {
+          Lampa.Loading.start(function () {
+            Lampa.Loading.stop();
+          });
+          playVideoFile(file, movie, info);
+        }
+      };
+    });
+
+    Lampa.Select.show({
+      title: 'Select file',
+      items: items,
+      onBack: function () {
+        Lampa.Controller.toggle('full_start');
+      },
+      onSelect: function (el) {
+        if (el.onSelect) el.onSelect(el);
+      }
+    });
+  }
+
+  function handleResultSelect(row, movie, info) {
+    var magnet = row.raw;
+
+    console.log('[AllDebrid] selected magnet', magnet);
+
+    if (!magnet || magnet.id == null) {
+      Lampa.Noty.show('Invalid magnet');
+      return;
+    }
+
+    Lampa.Loading.start(function () {
+      Lampa.Loading.stop();
+    });
+
+    fetchMagnetFiles(magnet.id)
+      .then(function (details) {
+        console.log('[AllDebrid] magnet details', details);
+
+        var allFiles = flattenMagnetFiles(details.files || []);
+        var videoFiles = filterVideoFiles(allFiles);
+
+        console.log('[AllDebrid] video files', videoFiles);
+
+        if (!videoFiles.length) {
+          Lampa.Loading.stop();
+          Lampa.Noty.show('No playable files');
+          return;
+        }
+
+        if (videoFiles.length === 1) {
+          return playVideoFile(videoFiles[0], movie, info);
+        }
+
+        Lampa.Loading.stop();
+        showVideoFilePicker(videoFiles, movie, info);
+      })
+      .catch(function (err) {
+        Lampa.Loading.stop();
+        console.error('[AllDebrid] magnet files failed', err);
+        Lampa.Noty.show('Unable to create stream');
+      });
   }
 
   function searchCachedTorrents(movie) {
     var info = extractMovieInfo(movie);
-    var queries = buildSearchQueries(info);
     var results = [];
     var seen = {};
 
-    console.log('[AllDebrid] queries', queries);
+    console.log('[AllDebrid] search for', info);
 
     function pushResult(item) {
-      var key = item.hash || item.title;
+      var key = String(item.magnetId || item.title);
       if (!key || seen[key]) return;
       seen[key] = true;
       results.push(item);
     }
 
     return fetchReadyMagnets().then(function (readyList) {
-        console.log('[AllDebrid] ready magnets', readyList);
+      console.log('[AllDebrid] ready magnets', readyList);
 
-        var magnets = Array.isArray(readyList) ? readyList : Object.values(readyList || {});
+      var magnets = Array.isArray(readyList) ? readyList : Object.values(readyList || {});
 
-        console.log('[AllDebrid] normalized magnets', magnets.length);
+      console.log('[AllDebrid] normalized magnets', magnets.length);
 
-        var readyMagnetsRaw = magnets;
-        var indexerFailed = false;
+      magnets.forEach(function (m) {
+        if (!matchesMovie(m.filename, info)) return;
 
-        function pushReadyMagnet(m, matchedOnly) {
-          if (matchedOnly && !matchesMovie(m.filename, info)) return;
-
-          pushResult({
-            title: m.filename,
-            size: formatBytes(m.size),
-            seeders: m.seeders != null ? String(m.seeders) : '—',
-            quality: parseQuality(m.filename),
-            hash: '',
-            cached: true,
-            source: 'alldebrid_library',
-            raw: m
-          });
-        }
-
-        readyMagnetsRaw.forEach(function (m) {
-          pushReadyMagnet(m, true);
+        pushResult({
+          title: m.filename,
+          size: formatBytes(m.size),
+          seeders: m.seeders != null ? String(m.seeders) : '—',
+          quality: parseQuality(m.filename),
+          magnetId: m.id,
+          cached: true,
+          source: 'alldebrid_library',
+          raw: m
         });
-
-        var chain = Promise.resolve();
-
-        queries.forEach(function (query) {
-          chain = chain
-            .then(function () {
-              console.log('[AllDebrid] indexer query', query);
-              return fetchIndexerResults(query);
-            })
-            .then(function (indexerResult) {
-              if (indexerResult && indexerResult.failed) indexerFailed = true;
-
-              var rows = (indexerResult && indexerResult.rows) || [];
-
-              console.log('[AllDebrid] indexer results', rows);
-
-              if (!rows.length) return;
-
-              var hashes = rows.map(function (r) {
-                return r.hash;
-              });
-
-              return checkInstantAvailability(hashes).then(function (cachedMap) {
-                console.log('[AllDebrid] instant cache', cachedMap);
-
-                rows.forEach(function (row) {
-                  if (!cachedMap[row.hash]) return;
-
-                  pushResult({
-                    title: row.title,
-                    size: formatBytes(row.size),
-                    seeders: row.seeders != null ? String(row.seeders) : '—',
-                    quality: row.quality,
-                    hash: row.hash,
-                    cached: true,
-                    source: 'instant',
-                    raw: Object.assign({}, row.raw, { instant: cachedMap[row.hash] })
-                  });
-                });
-              });
-            })
-            .catch(function (err) {
-              indexerFailed = true;
-              console.warn('[AllDebrid] Indexer failed, fallback to ready magnets', err);
-            });
-        });
-
-        return chain
-          .catch(function (err) {
-            indexerFailed = true;
-            console.warn('[AllDebrid] Indexer failed, fallback to ready magnets', err);
-          })
-          .then(function () {
-            if (indexerFailed && readyMagnetsRaw.length) {
-              console.warn('[AllDebrid] Indexer failed, fallback to ready magnets');
-
-              readyMagnetsRaw.forEach(function (m) {
-                pushReadyMagnet(m, false);
-              });
-            }
-
-            return results;
-          });
       });
+
+      return results;
+    });
   }
 
   function showMovieInfoModal(info) {
@@ -576,7 +583,7 @@
     });
   }
 
-  function showResultsModal(info, results) {
+  function showResultsModal(info, results, movie) {
     if (!results.length) {
       Lampa.Noty.show('No cached results found');
       showMovieInfoModal(info);
@@ -595,8 +602,7 @@
           row.quality,
         result: row,
         onSelect: function () {
-          console.log('[AllDebrid] selected result:', row);
-          Lampa.Noty.show('Selected (see console)');
+          handleResultSelect(row, movie, info);
         }
       };
     });
@@ -650,7 +656,7 @@
       .then(function (results) {
         Lampa.Loading.stop();
         console.log('[AllDebrid] results:', results);
-        showResultsModal(info, results);
+        showResultsModal(info, results, movie);
       })
       .catch(function (err) {
         Lampa.Loading.stop();
@@ -861,9 +867,9 @@
 
     Lampa.Manifest.plugins = {
       type: 'other',
-      version: '0.3.0',
+      version: '1.0.0',
       name: 'AllDebrid',
-      description: 'AllDebrid cached torrent search'
+      description: 'AllDebrid cached playback'
     };
 
     installSettings();
