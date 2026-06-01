@@ -396,10 +396,20 @@
     });
   }
 
+  function normalizeMagnetsList(readyList) {
+    console.log('[AllDebrid] readyList type', typeof readyList, Array.isArray(readyList));
+
+    var magnets = Array.isArray(readyList) ? readyList : Object.values(readyList || {});
+
+    console.log('[AllDebrid] normalized magnets', magnets.length);
+
+    return magnets;
+  }
+
   function fetchReadyMagnets() {
     return adRequest('/magnet/status', { status: 'ready' }, 'POST', AD_BASE_V41)
       .then(function (data) {
-        return (data && data.magnets) || [];
+        return normalizeMagnetsList((data && data.magnets) || []);
       })
       .catch(function (err) {
         console.error('[AllDebrid] fetchReadyMagnets failed (continuing search)', err);
@@ -440,7 +450,9 @@
     return fetchReadyMagnets().then(function (readyList) {
         console.log('[AllDebrid] ready magnets', readyList);
 
-        readyList.forEach(function (m) {
+        var magnets = normalizeMagnetsList(readyList);
+
+        magnets.forEach(function (m) {
           if (!matchesMovie(m.filename, info)) return;
 
           pushResult({
