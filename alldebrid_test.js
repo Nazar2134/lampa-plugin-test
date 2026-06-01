@@ -1,132 +1,453 @@
 (function () {
   'use strict';
 
-  if (window.plugin_alldebrid_test) return;
-  window.plugin_alldebrid_test = true;
+  /**
+   * Architecture (future):
+   * Movie → AllDebrid Search → Result List → Selected → Unlock → Direct URL → Lampa Player
+   * Playback not implemented in this MVP.
+   */
 
+  if (window.plugin_alldebrid) return;
+  window.plugin_alldebrid = true;
+
+  var AD_BASE = 'https://api.alldebrid.com/v4';
+  var AD_BASE_V41 = 'https://api.alldebrid.com/v4.1';
+  var STORAGE_KEY = 'alldebrid_api_key';
   var POLL_MS = 1000;
   var buttonAdded = false;
   var pollTimer = null;
-  var hooksInstalled = false;
+
+  function getApiKey() {
+    return Lampa.Storage.get('alldebrid_api_key', '');
+  }
+
+  function maskApiKey(key) {
+    if (!key) return '';
+    if (key.length <= 8) return '********';
+    return '****' + key.slice(-4);
+  }
+
+  function notifyApiKeyMissing() {
+    Lampa.Noty.show('AllDebrid API key is not configured. Open Settings → AllDebrid.');
+  }
+
+  function ensureApiKeyConfigured() {
+    var apiKey = getApiKey();
+    if (!apiKey) {
+      notifyApiKeyMissing();
+      return false;
+    }
+    return true;
+  }
 
   function getActiveMovie() {
     var activity = Lampa.Activity.active();
     if (!activity) return null;
-    return activity.card || activity.movie || null;
+    return activity.movie || activity.card || null;
   }
 
-  function logMovieContext(label) {
-    var movie = getActiveMovie();
-    var activity = Lampa.Activity.active();
-
-    var title = '';
-    var tmdbId = null;
-    var searchQuery = '';
-
-    if (movie) {
-      title = movie.title || movie.name || '';
-      tmdbId = movie.id != null ? movie.id : null;
+  function extractMovieInfo(movie) {
+    if (!movie) {
+      return {
+        title: '',
+        original_title: '',
+        imdb_id: '',
+        release_date: '',
+        tmdb_id: ''
+      };
     }
 
-    if (activity) {
-      searchQuery = activity.search || activity.search_one || activity.search_two || '';
-    }
-
-    console.log('[AllDebrid] ' + label);
-    console.log('[AllDebrid]   movie title:', title);
-    console.log('[AllDebrid]   TMDB id:', tmdbId);
-    console.log('[AllDebrid]   search query:', searchQuery);
-    console.log('[AllDebrid]   activity:', activity);
-    console.log('[AllDebrid]   movie:', movie);
-  }
-
-  function logCall(label, fnName, args) {
-    console.group('[AllDebrid] ' + label + '.' + fnName);
-
-    console.log('args.length =', args.length);
-
-    for (var i = 0; i < args.length; i++) {
-      console.log('arg[' + i + ']', args[i]);
-    }
-
-    console.trace();
-
-    console.groupEnd();
-  }
-
-  function wrapMethod(obj, name, label) {
-    if (!obj || typeof obj[name] !== 'function') return false;
-
-    var original = obj[name];
-    obj[name] = function () {
-      var args = [].slice.call(arguments);
-      logCall(label, name, args);
-      return original.apply(this, arguments);
+    return {
+      title: movie.title || movie.name || '',
+      original_title: movie.original_title || movie.original_name || '',
+      imdb_id: movie.imdb_id || '',
+      release_date: movie.release_date || movie.first_air_date || '',
+      tmdb_id: movie.id != null ? String(movie.id) : ''
     };
-
-    console.log('[AllDebrid] hooked: ' + label + '.' + name);
-    return true;
   }
 
-  function installTorrentHooks() {
-    if (hooksInstalled) return;
-    hooksInstalled = true;
+  function escapeHtml(str) {
+    return String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
 
-    console.log('[AllDebrid] installing torrent intercept hooks');
+  function buildSearchQueries(info) {
+    var queries = [];
+    var year = info.release_date ? String(info.release_date).slice(0, 4) : '';
 
-    if (Lampa.Parser) {
-      wrapMethod(Lampa.Parser, 'init', 'Parser');
-      wrapMethod(Lampa.Parser, 'get', 'Parser');
-      wrapMethod(Lampa.Parser, 'jackett', 'Parser');
-      wrapMethod(Lampa.Parser, 'clear', 'Parser');
-    } else {
-      console.log('[AllDebrid] Lampa.Parser not found');
+    if (info.imdb_id) {
+      queries.push(String(info.imdb_id).replace(/^tt/i, 'tt'));
     }
 
-    if (Lampa.Torrent) {
-      Object.getOwnPropertyNames(Lampa.Torrent).forEach(function (name) {
-        if (typeof Lampa.Torrent[name] !== 'function') return;
+    if (info.title) {
+      queries.push(info.title + (year ? ' ' + year : ''));
+    }
 
-        var original = Lampa.Torrent[name];
+    if (info.original_title && info.original_title !== info.title) {
+      queries.push(info.original_title + (year ? ' ' + year : ''));
+    }
 
-        Lampa.Torrent[name] = function () {
-          console.group('[AllDebrid] Torrent.' + name);
+    return queries.filter(function (q, i, arr) {
+      return q && arr.indexOf(q) === i;
+    });
+  }
 
-          console.log('args.length', arguments.length);
+  function parseQuality(name) {
+    var n = String(name || '').toLowerCase();
+    var match = n.match(/\b(2160p|1080p|720p|480p|4k|8k)\b/i);
+    return match ? match[1].toUpperCase() : '—';
+  }
 
-          for (var i = 0; i < arguments.length; i++) {
-            console.log('arg[' + i + ']', arguments[i]);
+  function formatBytes(bytes) {
+    var n = Number(bytes);
+    if (!n || isNaN(n)) return '—';
+    var units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    var i = 0;
+    while (n >= 1024 && i < units.length - 1) {
+      n /= 1024;
+      i++;
+    }
+    return n.toFixed(i > 0 ? 1 : 0) + ' ' + units[i];
+  }
+
+  function encodeFormBody(params, apiKey) {
+    var parts = ['apikey=' + encodeURIComponent(apiKey)];
+
+    Object.keys(params || {}).forEach(function (key) {
+      var val = params[key];
+      if (val == null) return;
+
+      if (Array.isArray(val)) {
+        val.forEach(function (item) {
+          parts.push(encodeURIComponent(key) + '=' + encodeURIComponent(item));
+        });
+      } else {
+        parts.push(encodeURIComponent(key) + '=' + encodeURIComponent(val));
+      }
+    });
+
+    return parts.join('&');
+  }
+
+  function adRequest(path, params, method, base) {
+    var apiKey = getApiKey();
+
+    if (!apiKey) {
+      return Promise.reject(new Error('AllDebrid API key is not configured'));
+    }
+
+    method = (method || 'GET').toUpperCase();
+    params = params || {};
+    base = base || AD_BASE;
+
+    return new Promise(function (resolve, reject) {
+      var network = new Lampa.Reguest();
+      var url = base + path;
+
+      if (method === 'GET') {
+        var parts = ['apikey=' + encodeURIComponent(apiKey)];
+
+        Object.keys(params).forEach(function (key) {
+          var val = params[key];
+          if (val == null) return;
+
+          if (Array.isArray(val)) {
+            val.forEach(function (item) {
+              parts.push(encodeURIComponent(key) + '=' + encodeURIComponent(item));
+            });
+          } else {
+            parts.push(encodeURIComponent(key) + '=' + encodeURIComponent(val));
+          }
+        });
+
+        url += (url.indexOf('?') >= 0 ? '&' : '?') + parts.join('&');
+
+        network.silent(
+          url,
+          function (json) {
+            if (json && json.status === 'success') resolve(json.data);
+            else reject(json || new Error('AllDebrid request failed'));
+          },
+          function (a, c) {
+            reject(new Error(network.errorDecode(a, c) || 'Network error'));
+          }
+        );
+      } else {
+        network.native(
+          url,
+          function (json) {
+            if (json && json.status === 'success') resolve(json.data);
+            else reject(json || new Error('AllDebrid request failed'));
+          },
+          function (a, c) {
+            reject(new Error(network.errorDecode(a, c) || 'Network error'));
+          },
+          false,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: encodeFormBody(params, apiKey)
+          }
+        );
+      }
+    });
+  }
+
+  function fetchIndexerResults(query) {
+    return new Promise(function (resolve, reject) {
+      var network = new Lampa.Reguest();
+      var url =
+        'https://apibay.org/q.php?q=' +
+        encodeURIComponent(query) +
+        '&cat=0';
+
+      network.silent(
+        url,
+        function (json) {
+          if (!Array.isArray(json)) {
+            resolve([]);
+            return;
           }
 
-          console.trace();
+          resolve(
+            json
+              .filter(function (row) {
+                return row && row.id && row.id !== '0';
+              })
+              .map(function (row) {
+                return {
+                  title: row.name,
+                  hash: String(row.info_hash || '').toLowerCase(),
+                  size: row.size,
+                  seeders: row.seeders,
+                  quality: parseQuality(row.name),
+                  source: 'indexer',
+                  raw: row
+                };
+              })
+          );
+        },
+        function (a, c) {
+          reject(new Error(network.errorDecode(a, c) || 'Indexer search failed'));
+        }
+      );
+    });
+  }
 
-          console.groupEnd();
+  function checkInstantAvailability(hashes) {
+    if (!hashes.length) return Promise.resolve([]);
 
-          return original.apply(this, arguments);
-        };
+    return adRequest('/magnet/instant', { 'magnets[]': hashes }, 'GET').then(function (data) {
+      var magnets = (data && data.magnets) || [];
+      var cached = {};
 
-        console.log('[AllDebrid] hooked: Torrent.' + name);
+      magnets.forEach(function (m) {
+        if (m && m.hash && m.instant) {
+          cached[String(m.hash).toLowerCase()] = m;
+        }
       });
-    } else {
-      console.log('[AllDebrid] Lampa.Torrent not found');
+
+      return cached;
+    });
+  }
+
+  function fetchReadyMagnets() {
+    return adRequest('/magnet/status', { status: 'ready' }, 'POST', AD_BASE_V41).then(function (data) {
+      return (data && data.magnets) || [];
+    });
+  }
+
+  function matchesMovie(name, info) {
+    var text = String(name || '').toLowerCase();
+    if (!text) return false;
+
+    if (info.imdb_id && text.indexOf(String(info.imdb_id).toLowerCase()) >= 0) return true;
+
+    if (info.title && text.indexOf(String(info.title).toLowerCase()) >= 0) return true;
+
+    if (info.original_title && text.indexOf(String(info.original_title).toLowerCase()) >= 0) {
+      return true;
     }
 
-    Lampa.Listener.follow('torrent', function (e) {
-      console.log('[AllDebrid] Listener torrent event:', e);
-      logMovieContext('torrent listener / ' + (e && e.type ? e.type : 'unknown'));
+    return false;
+  }
+
+  function searchCachedTorrents(movie) {
+    var info = extractMovieInfo(movie);
+    var queries = buildSearchQueries(info);
+    var results = [];
+    var seen = {};
+
+    function pushResult(item) {
+      var key = item.hash || item.title;
+      if (!key || seen[key]) return;
+      seen[key] = true;
+      results.push(item);
+    }
+
+    return fetchReadyMagnets()
+      .then(function (readyList) {
+        readyList.forEach(function (m) {
+          if (!matchesMovie(m.filename, info)) return;
+
+          pushResult({
+            title: m.filename,
+            size: formatBytes(m.size),
+            seeders: m.seeders != null ? String(m.seeders) : '—',
+            quality: parseQuality(m.filename),
+            hash: '',
+            cached: true,
+            source: 'alldebrid_library',
+            raw: m
+          });
+        });
+
+        var chain = Promise.resolve();
+
+        queries.forEach(function (query) {
+          chain = chain
+            .then(function () {
+              return fetchIndexerResults(query);
+            })
+            .then(function (rows) {
+              var hashes = rows.map(function (r) {
+                return r.hash;
+              });
+
+              return checkInstantAvailability(hashes).then(function (cachedMap) {
+                rows.forEach(function (row) {
+                  if (!cachedMap[row.hash]) return;
+
+                  pushResult({
+                    title: row.title,
+                    size: formatBytes(row.size),
+                    seeders: row.seeders != null ? String(row.seeders) : '—',
+                    quality: row.quality,
+                    hash: row.hash,
+                    cached: true,
+                    source: 'instant',
+                    raw: Object.assign({}, row.raw, { instant: cachedMap[row.hash] })
+                  });
+                });
+              });
+            });
+        });
+
+        return chain.then(function () {
+          return results;
+        });
+      });
+  }
+
+  function showMovieInfoModal(info) {
+    var html =
+      '<div class="alldebrid-info" style="padding:1em;line-height:1.6;">' +
+      '<div><b>Title</b><br>' +
+      escapeHtml(info.title) +
+      '</div><br>' +
+      '<div><b>IMDb ID</b><br>' +
+      escapeHtml(info.imdb_id || '—') +
+      '</div><br>' +
+      '<div><b>Release date</b><br>' +
+      escapeHtml(info.release_date || '—') +
+      '</div><br>' +
+      '<div><b>TMDB ID</b><br>' +
+      escapeHtml(info.tmdb_id || '—') +
+      '</div>' +
+      '</div>';
+
+    Lampa.Modal.open({
+      title: 'AllDebrid',
+      html: html,
+      onBack: function () {
+        Lampa.Modal.close();
+        Lampa.Controller.toggle('full_start');
+      }
+    });
+  }
+
+  function showResultsModal(info, results) {
+    if (!results.length) {
+      Lampa.Noty.show('No cached results found');
+      showMovieInfoModal(info);
+      return;
+    }
+
+    var items = results.map(function (row) {
+      return {
+        title: row.title,
+        subtitle:
+          'Size: ' +
+          row.size +
+          ' · Seeders: ' +
+          row.seeders +
+          ' · Quality: ' +
+          row.quality,
+        result: row,
+        onSelect: function () {
+          console.log('[AllDebrid] selected result:', row);
+          Lampa.Noty.show('Selected (see console)');
+        }
+      };
     });
 
-    Lampa.Listener.follow('activity', function (e) {
-      var active = Lampa.Activity.active();
-      var isTorrent =
-        (e && e.component === 'torrent') ||
-        (active && active.component === 'torrent');
-
-      if (!isTorrent) return;
-
-      console.log('[AllDebrid] activity (torrent):', e);
-      logMovieContext('activity torrent / ' + (e && e.type ? e.type : 'unknown'));
+    items.unshift({
+      title: info.title || 'Movie',
+      subtitle:
+        'IMDb: ' +
+        (info.imdb_id || '—') +
+        ' · TMDB: ' +
+        (info.tmdb_id || '—') +
+        ' · ' +
+        (info.release_date || '—'),
+      separator: true
     });
+
+    Lampa.Select.show({
+      title: 'AllDebrid — cached results',
+      items: items,
+      onBack: function () {
+        Lampa.Controller.toggle('full_start');
+      },
+      onSelect: function (el) {
+        if (el.onSelect) el.onSelect(el);
+      }
+    });
+  }
+
+  function onAllDebridClick() {
+    var movie = getActiveMovie();
+
+    if (!movie) {
+      Lampa.Noty.show('No movie data');
+      return;
+    }
+
+    var info = extractMovieInfo(movie);
+
+    if (!ensureApiKeyConfigured()) {
+      return;
+    }
+
+    Lampa.Loading.start(function () {
+      Lampa.Loading.stop();
+    });
+
+    searchCachedTorrents(movie)
+      .then(function (results) {
+        Lampa.Loading.stop();
+        console.log('[AllDebrid] results:', results);
+        showResultsModal(info, results);
+      })
+      .catch(function (err) {
+        Lampa.Loading.stop();
+        console.error('[AllDebrid] search error:', err);
+        Lampa.Noty.show('AllDebrid: ' + (err.message || 'search failed'));
+        showMovieInfoModal(info);
+      });
   }
 
   function injectButton() {
@@ -141,13 +462,16 @@
 
     mount.append(
       '<div class="full-start__button selector button--alldebrid">' +
-        '<span>AllDebrid TEST</span>' +
+        '<div class="full-start__icon">' +
+          '<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">' +
+            '<path d="M12 2L2 7l10 5 10-5-10-5zm0 7L2 14l10 5 10-5-10-5zm0 7l-10 5 10 5 10-5-10-5z"/>' +
+          '</svg>' +
+        '</div>' +
+        '<span>AllDebrid</span>' +
       '</div>'
     );
 
-    $('.button--alldebrid').on('hover:enter click', function () {
-      Lampa.Noty.show('Button works');
-    });
+    $('.button--alldebrid').on('hover:enter click', onAllDebridClick);
 
     buttonAdded = true;
     console.log('[AllDebrid] BUTTON ADDED');
@@ -163,10 +487,117 @@
     pollTimer = setInterval(injectButton, POLL_MS);
   }
 
+  function updateApiKeyDisplay(body) {
+    if (!body || !body.length) return;
+
+    var key = getApiKey();
+    var field = body.find('[data-name="alldebrid_api_key"] .settings-param__value');
+
+    if (field.length) {
+      field.text(key ? maskApiKey(key) : 'Not set');
+    }
+  }
+
+  function addLang() {
+    if (!Lampa.Lang || !Lampa.Lang.add) return;
+
+    Lampa.Lang.add({
+      alldebrid_settings_title: {
+        en: 'AllDebrid',
+        ru: 'AllDebrid'
+      },
+      alldebrid_api_key_title: {
+        en: 'API Key',
+        ru: 'API ключ'
+      },
+      alldebrid_api_key_descr: {
+        en: 'Your personal AllDebrid API key (stored only on this device)',
+        ru: 'Ваш личный API ключ AllDebrid (хранится только на устройстве)'
+      }
+    });
+  }
+
+  function installSettings() {
+    if (!Lampa.Params || !Lampa.Params.select) return;
+
+    Lampa.Params.select('alldebrid_api_key', '', '');
+
+    Lampa.Template.add(
+      'settings_alldebrid',
+      '<div class="settings-param selector" data-name="alldebrid_api_key" data-type="input">' +
+        '<div class="settings-param__name">#{alldebrid_api_key_title}</div>' +
+        '<div class="settings-param__value"></div>' +
+        '<div class="settings-param__descr">#{alldebrid_api_key_descr}</div>' +
+      '</div>'
+    );
+
+    function addSettingsMenuItem() {
+      if (!Lampa.Settings || !Lampa.Settings.main) return;
+
+      var main = Lampa.Settings.main().render();
+      if (main.find('[data-component="alldebrid"]').length) return;
+
+      var label = Lampa.Lang.translate
+        ? Lampa.Lang.translate('alldebrid_settings_title')
+        : 'AllDebrid';
+
+      var item = $(
+        '<div class="settings-folder selector" data-component="alldebrid">' +
+          '<div class="settings-folder__icon">' +
+            '<svg height="29" viewBox="0 0 24 24" fill="currentColor">' +
+              '<path d="M12 2L2 7l10 5 10-5-10-5zm0 7L2 14l10 5 10-5-10-5zm0 7l-10 5 10 5 10-5-10-5z"/>' +
+            '</svg>' +
+          '</div>' +
+          '<div class="settings-folder__name">' +
+          label +
+          '</div>' +
+        '</div>'
+      );
+
+      var anchor = main.find('[data-component="more"]');
+      if (anchor.length) anchor.after(item);
+      else main.append(item);
+
+      Lampa.Settings.main().update();
+    }
+
+    if (window.appready) addSettingsMenuItem();
+    else {
+      Lampa.Listener.follow('app', function (e) {
+        if (e.type === 'ready') addSettingsMenuItem();
+      });
+    }
+
+    Lampa.Settings.listener.follow('open', function (e) {
+      if (e.name !== 'alldebrid') return;
+
+      updateApiKeyDisplay(e.body);
+    });
+
+    Lampa.Storage.listener.follow('change', function (e) {
+      if (e.name !== STORAGE_KEY) return;
+
+      var body = $('.settings [data-component="alldebrid"]').length
+        ? $('.settings')
+        : null;
+
+      if (body) updateApiKeyDisplay(body);
+    });
+  }
+
   function init() {
-    console.log('[AllDebrid] plugin ready');
-    installTorrentHooks();
+    addLang();
+
+    Lampa.Manifest.plugins = {
+      type: 'other',
+      version: '0.3.0',
+      name: 'AllDebrid',
+      description: 'AllDebrid cached torrent search'
+    };
+
+    installSettings();
     startPolling();
+    console.log('[AllDebrid] plugin ready');
   }
 
   if (window.appready) {
