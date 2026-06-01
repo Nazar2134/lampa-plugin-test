@@ -227,6 +227,12 @@
 
   function logCandidateList(candidates, label) {
     var list = toArray(candidates);
+    var isPreFilter =
+      label &&
+      (label.indexOf('before') !== -1 ||
+        label.indexOf('merged') !== -1 ||
+        label.indexOf('ready magnets') !== -1);
+    var tag = isPreFilter ? '[PRE-FILTER]' : '[CANDIDATE]';
 
     console.log('[PIPELINE]', label || 'candidates', '— listing', list.length, 'items');
 
@@ -239,7 +245,7 @@
             item.Title ||
             '')) ||
         '';
-      console.log('[CANDIDATE]', index, name);
+      console.log(tag, index, name);
     });
 
     return list;
