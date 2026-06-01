@@ -1277,7 +1277,7 @@
       var m = list[i];
       var filename = m && (m.filename || m.name) ? m.filename || m.name : '';
       var score = scoreMovieAgainstFilename(movie, filename);
-      var matched = score >= MIN_MATCH_SCORE;
+      var matched = true;
 
       console.log('[MATCH CHECK]', {
         movieTitle: movieTitle,
@@ -1301,6 +1301,8 @@
 
     console.log('[MATCH] matched count', scored.length);
     console.log('[PIPELINE] filterMagnetsForMovie — output length:', scored.length);
+    console.log('[BYPASS TEST] input count', list.length);
+    console.log('[BYPASS TEST] output count', scored.length);
 
     return scored;
   }
