@@ -9,6 +9,7 @@
   var MAX_CANDIDATES = 150;
   var MAX_SEARCH_QUERIES = 3;
   var APIBAY_URL = 'https://apibay.org/q.php';
+  var TORRENTIO_BASE = 'https://torrentio.strem.fun';
 
   if (window.plugin_alldebrid) return;
   window.plugin_alldebrid = true;
@@ -46,6 +47,79 @@
     return true;
   }
 
+  function normalizeImdbId(raw) {
+    var id = String(raw || '').trim();
+    if (!id) return '';
+    if (/^tt\d+$/i.test(id)) return id.toLowerCase();
+    if (/^\d+$/.test(id)) return 'tt' + id;
+    return id;
+  }
+
+  function getTorrentioStreams(imdbId) {
+    return new Promise(function (resolve, reject) {
+      var normalized = normalizeImdbId(imdbId);
+
+      if (!normalized) {
+        Lampa.Noty.show('IMDb ID is not available for this title');
+        reject(new Error('imdb_id missing'));
+        return;
+      }
+
+      var apiKey = getApiKey();
+      if (!apiKey) {
+        notifyApiKeyMissing();
+        reject(new Error('AllDebrid API key is not configured'));
+        return;
+      }
+
+      if (typeof Lampa === 'undefined' || typeof Lampa.Reguest !== 'function') {
+        reject(new Error('Lampa.Reguest is not available'));
+        return;
+      }
+
+      var url =
+        TORRENTIO_BASE +
+        '/alldebrid=' +
+        encodeURIComponent(apiKey) +
+        '/stream/movie/' +
+        encodeURIComponent(normalized) +
+        '.json';
+
+      console.log('[TORRENTIO REQUEST]', url.replace(apiKey, maskApiKey(apiKey)));
+
+      var req = new Lampa.Reguest();
+
+      req.native(
+        url,
+        function (data) {
+          console.log('[TORRENTIO RESPONSE]', data);
+
+          var streams = [];
+
+          if (data && Array.isArray(data.streams)) {
+            streams = data.streams;
+          } else if (typeof data === 'string') {
+            try {
+              var parsed = JSON.parse(data);
+              streams = parsed && Array.isArray(parsed.streams) ? parsed.streams : [];
+            } catch (parseErr) {
+              console.log('[TORRENTIO RESPONSE] parse error', parseErr);
+              reject(new Error('Torrentio response parse failed'));
+              return;
+            }
+          }
+
+          console.log('[TORRENTIO RESPONSE] streams count', streams.length);
+          resolve(streams);
+        },
+        function (err) {
+          console.log('[TORRENTIO RESPONSE] error', err);
+          reject(err || new Error('Torrentio request failed'));
+        }
+      );
+    });
+  }
+
   /**
    * Movie/card data sources in this plugin:
    * - getActiveMovie()           → Lampa.Activity.active().movie || .card
@@ -54,7 +128,7 @@
    * - getMovieForButton()        → full event data.movie || props.get('movie') || getActiveMovie()
    * - syncAllDebridButton()      → getMovieForButton(fullEvent) || getActiveMovie()
    * - onAllDebridClick()         → getActiveMovie() → snapshotMovie() → searchCachedTorrents(movie)
-   * - searchCachedTorrents(movie) → passes snapshot to public + account paths
+   * - searchCachedTorrents(movie) → MVP: fetchReadyMagnets → title match only
    * - searchAccountLibraryFallback → compares snapshot vs getActiveMovie() after async fetch
    * Not used: currentMovie, cachedMovie, selectedMovie (no such vars in plugin)
    * - lastMovieId                → button UI only, NOT search matching
@@ -1006,6 +1080,70 @@
       });
   }
 
+  function magnetDisplayName(m) {
+    return (m && (m.filename || m.name || m.title || m.Title)) || '';
+  }
+
+  function buildReadyMagnetIndex(readyList) {
+    var ids = {};
+    var names = {};
+    var list = toArray(readyList);
+
+    list.forEach(function (m) {
+      if (!m) return;
+
+      if (m.id != null) ids[String(m.id)] = true;
+
+      var norm = normalizeTitle(magnetDisplayName(m));
+      if (norm) names[norm] = true;
+    });
+
+    return { ids: ids, names: names, count: list.length };
+  }
+
+  function logMatchSourceHit(movie, row, readyIndex) {
+    var movieTitle = movie.title || movie.name || '';
+    var filename = row.title || '';
+
+    console.log('[MATCH SOURCE]', {
+      movie: movieTitle,
+      filename: filename,
+      source: row.source || 'readyMagnets',
+      magnetId: row.magnetId,
+      fromFetchReadyMagnets: true,
+      inReadyListById: row.magnetId != null && !!readyIndex.ids[String(row.magnetId)],
+      inReadyListByFilename: !!readyIndex.names[normalizeTitle(filename)],
+      readyMagnetsPoolSize: readyIndex.count
+    });
+  }
+
+  function logMatchSourceMiss(movie, readyCount, publicCount, meta) {
+    meta = meta || {};
+
+    console.log('[MATCH SOURCE]', {
+      movie: movie.title || movie.name || '',
+      readyMagnetsMatches: readyCount,
+      publicMatches: publicCount,
+      publicSearchInvoked: !!meta.publicSearchInvoked,
+      publicSearchUsedForPlayback: false,
+      playbackSource: 'none',
+      activePipeline: meta.activePipeline || 'readyMagnetsOnly'
+    });
+  }
+
+  function probePublicSearchMatchCount(movie, searchId) {
+    console.log('[MATCH SOURCE] probing publicSearch (diagnostic only — not used for playback)');
+
+    return searchPublicCachedTorrents(movie, searchId)
+      .then(function (results) {
+        return toArray(results).length;
+      })
+      .catch(function (err) {
+        console.warn('[MATCH SOURCE] publicSearch probe failed', err);
+        return 0;
+      });
+  }
+
   function searchAccountLibraryFallback(movie, searchId) {
     logMovieDataSources('searchAccountLibraryFallback — start', movie);
     console.log('[PIPELINE] searchAccountLibraryFallback — MVP (readyList → title filter → results)');
@@ -1017,8 +1155,12 @@
         return [];
       }
 
-      console.log('[STEP] fetchReadyMagnets output count', toArray(readyList).length);
-      console.log('[DEBUG] readyList length', toArray(readyList).length);
+      var readyPool = toArray(readyList);
+      var readyIndex = buildReadyMagnetIndex(readyPool);
+
+      console.log('[STEP] fetchReadyMagnets output count', readyPool.length);
+      console.log('[DEBUG] readyList length', readyPool.length);
+      console.log('[MATCH SOURCE] fetchReadyMagnets pool size:', readyIndex.count);
 
       logMovieDataSources('searchAccountLibraryFallback — after fetchReadyMagnets', movie);
 
@@ -1055,7 +1197,7 @@
 
       for (var i = 0; i < matched.length; i++) {
         var m = matched[i];
-        var row = buildResultRow(m, 'alldebrid_library');
+        var row = buildResultRow(m, 'readyMagnets');
         row.magnetId = m.id;
 
         var key = String(row.magnetId || row.hash || row.title);
@@ -1063,10 +1205,20 @@
 
         seen[key] = true;
         results.push(row);
+        logMatchSourceHit(movie, row, readyIndex);
       }
 
       console.log('[STEP] searchAccountLibraryFallback final output count', results.length);
       console.log('[AllDebrid] account fallback results', results.length);
+
+      if (!results.length) {
+        console.log('[MATCH SOURCE] no readyMagnets title matches after filter', {
+          movie: movie.title || movie.name || '',
+          readyMagnetsPoolSize: readyIndex.count,
+          titleFilterMatches: matched.length
+        });
+      }
+
       return results;
     });
   }
@@ -1627,7 +1779,10 @@
     logMovieDataSources('searchCachedTorrents — start (account ready magnets only)', movie);
 
     var info = extractMovieInfo(movie);
+    var movieTitle = movie.title || movie.name || '';
+
     console.log('[PIPELINE] searchCachedTorrents — MVP account path searchId', searchId);
+    console.log('[MATCH SOURCE] pipeline: fetchReadyMagnets only — public search NOT used for playback');
     console.log('[AllDebrid] search for', info);
 
     return searchAccountLibraryFallback(movie, searchId).then(function (results) {
@@ -1636,8 +1791,33 @@
         return [];
       }
 
-      console.log('[PIPELINE] searchCachedTorrents — account results', results.length);
-      return results;
+      var readyResults = toArray(results);
+      var readyCount = readyResults.length;
+
+      console.log('[PIPELINE] searchCachedTorrents — readyMagnets results', readyCount);
+
+      return probePublicSearchMatchCount(movie, searchId).then(function (publicCount) {
+        if (readyCount) {
+          console.log('[MATCH SOURCE] summary', {
+            movie: movieTitle,
+            readyMagnetsMatches: readyCount,
+            publicMatches: publicCount,
+            playbackSource: 'readyMagnets',
+            publicSearchUsedForPlayback: false,
+            note:
+              publicCount === 0
+                ? 'All playback results came from fetchReadyMagnets (account ready library)'
+                : 'Public probe found matches but MVP does not use them for playback'
+          });
+        } else {
+          logMatchSourceMiss(movie, 0, publicCount, {
+            publicSearchInvoked: true,
+            activePipeline: 'readyMagnetsOnly'
+          });
+        }
+
+        return readyResults;
+      });
     });
   }
 
@@ -1677,6 +1857,10 @@
     console.log('[DEBUG] showResultsModal resultsList length', resultsList.length);
 
     if (!Array.isArray(resultsList) || !resultsList.length) {
+      console.log('[MATCH SOURCE] UI: No cached torrents found', {
+        movie: (movie && (movie.title || movie.name)) || (info && info.title) || '',
+        resultsReceived: 0
+      });
       Lampa.Noty.show('No cached torrents found');
       return;
     }
@@ -1755,6 +1939,14 @@
     if (!ensureApiKeyConfigured()) {
       return;
     }
+
+    getTorrentioStreams(info.imdb_id)
+      .then(function (streams) {
+        console.log('[TORRENTIO] streams from onAllDebridClick', streams);
+      })
+      .catch(function (err) {
+        console.warn('[TORRENTIO] onAllDebridClick failed', err);
+      });
 
     Lampa.Loading.start(function () {
       Lampa.Loading.stop();
