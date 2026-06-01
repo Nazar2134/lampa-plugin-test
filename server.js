@@ -68,35 +68,41 @@ async function resolveTorrentioUrl(sourceUrl) {
       }
     });
 
-    const finalUrl = String(response.url || '').trim();
+    console.log('================================');
+    console.log('TORRENTIO DEBUG');
+    console.log('SOURCE URL:', sourceUrl);
+    console.log('FINAL URL:', response.url);
+    console.log('STATUS:', response.status);
+    console.log('REDIRECTED:', response.redirected);
+
     const body = await response.text();
-    let hostUrl = finalUrl;
 
-    if (body && /^https?:\/\//i.test(body.trim())) {
-      hostUrl = body.trim().split(/\s/)[0];
+    console.log('BODY START');
+    console.log(body.substring(0, 2000));
+    console.log('BODY END');
+    console.log('================================');
+
+    const finalUrl = String(response.url || '').trim();
+
+    if (
+      finalUrl &&
+      !TORRENTIO_RESOLVE_RE.test(finalUrl)
+    ) {
+      return finalUrl;
     }
 
-    if (!hostUrl || TORRENTIO_RESOLVE_RE.test(hostUrl)) {
-      throw new Error('Upstream did not return a host link');
+    const match = body.match(/https?:\/\/[^\s"'<>]+/i);
+
+    if (match && match[0]) {
+      return match[0];
     }
 
-    return hostUrl;
-  } finally {
+    throw new Error('Upstream did not return a host link');
+  }
+  finally {
     clearTimeout(timeoutId);
   }
 }
-
-app.get('/health', (req, res) => {
-  res.json({ ok: true, service: 'torrentio-resolve-proxy' });
-});
-
-async function handleResolve(req, res) {
-  const sourceUrl = req.method === 'GET' ? req.query.url : req.body && req.body.url;
-  const check = validateResolveUrl(sourceUrl);
-
-  if (!check.ok) {
-    return res.status(400).json({ ok: false, error: check.error });
-  }
 
   logResolveAccepted();
 
