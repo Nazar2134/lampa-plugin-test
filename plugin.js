@@ -1723,6 +1723,98 @@
     return /torrentio\.strem\.fun\/resolve\/alldebrid\//i.test(String(url || ''));
   }
 
+  function isUnlockableHostLink(url) {
+    var u = String(url || '').trim();
+    if (!u || isTorrentioResolvePlayUrl(u)) {
+      return false;
+    }
+    return /^https?:\/\//i.test(u);
+  }
+
+  function extractUrlFromNativeResolveData(data) {
+    if (data && typeof data === 'object' && data.url) {
+      return String(data.url).trim();
+    }
+
+    var text = typeof data === 'string' ? data.trim() : '';
+
+    if (/^https?:\/\//i.test(text)) {
+      return text;
+    }
+
+    if (text) {
+      try {
+        var parsed = JSON.parse(text);
+        if (parsed && parsed.url) {
+          return String(parsed.url).trim();
+        }
+      } catch (e) {
+        /* not JSON */
+      }
+    }
+
+    return '';
+  }
+
+  /**
+   * Resolve torrentio.strem.fun/resolve/... via Lampa native HTTP only (not unlock API).
+   */
+  function nativeTorrentioResolve(torrentioResolveUrl) {
+    return new Promise(function (resolve, reject) {
+      if (!isTorrentioResolvePlayUrl(torrentioResolveUrl)) {
+        reject(new Error('nativeTorrentioResolve: not a torrentio resolve URL'));
+        return;
+      }
+
+      function onNativeData(data) {
+        console.log('[TORRENTIO PLAY] native response body', data);
+        console.log('[TORRENTIO PLAY] native response type', typeof data);
+
+        var hostLink = extractUrlFromNativeResolveData(data);
+
+        console.log('[TORRENTIO PLAY] native extracted host url', hostLink);
+        console.log('[TORRENTIO PLAY] native resolved result', hostLink);
+
+        if (!hostLink) {
+          reject(new Error('Native resolve returned no host link'));
+          return;
+        }
+
+        if (isTorrentioResolvePlayUrl(hostLink)) {
+          reject(new Error('Native returned torrentio resolve URL instead of host link'));
+          return;
+        }
+
+        if (!isUnlockableHostLink(hostLink)) {
+          reject(new Error('Native returned non-host URL'));
+          return;
+        }
+
+        resolve(hostLink);
+      }
+
+      function onNativeError(err) {
+        reject(err || new Error('Native resolve failed'));
+      }
+
+      if (typeof Android !== 'undefined' && typeof Android.httpReq === 'function') {
+        Android.httpReq({ url: torrentioResolveUrl, timeout: 30000 }, {
+          complite: onNativeData,
+          error: onNativeError
+        });
+        return;
+      }
+
+      if (typeof Lampa === 'undefined' || typeof Lampa.Reguest !== 'function') {
+        reject(new Error('Lampa.Reguest is not available'));
+        return;
+      }
+
+      var req = new Lampa.Reguest();
+      req.native(torrentioResolveUrl, onNativeData, onNativeError);
+    });
+  }
+
   function getTorrentioPlayUrl(stream, row) {
     stream = stream || {};
     row = row || {};
@@ -1743,8 +1835,8 @@
   }
 
   /**
-   * Torrentio playback: resolve URL → AllDebrid /link/unlock (server-side) → Player.
-   * No native/fetch/XHR/HEAD to torrentio or debrid.it in the browser.
+   * Torrentio playback: native(resolve) → unlockLink(host) → Player.
+   * unlockLink is never called with torrentio.strem.fun resolve URLs.
    */
   function playTorrentioStream(stream, movie, info, row) {
     stream = stream || {};
@@ -1766,21 +1858,24 @@
     }
 
     console.log('[TORRENTIO PLAY] input', playUrl);
-    console.log(
-      '[TORRENTIO PLAY] native resolved result',
-      '(skipped — nativeTorrentioResolve not used; direct unlockLink)',
-      playUrl
-    );
 
     Lampa.Loading.start(function () {
       Lampa.Loading.stop();
     });
 
-    console.log('[TORRENTIO PLAY] unlock request', playUrl);
+    nativeTorrentioResolve(playUrl)
+      .then(function (hostLink) {
+        if (!isUnlockableHostLink(hostLink) || isTorrentioResolvePlayUrl(hostLink)) {
+          var hostErr = new Error('No unlockable host link after native resolve');
+          console.log('[TORRENTIO PLAY] unlock failed', hostErr.message, hostLink);
+          return Promise.reject(hostErr);
+        }
 
-    unlockLink(playUrl)
+        console.log('[TORRENTIO PLAY] unlock request', hostLink);
+
+        return unlockLink(hostLink);
+      })
       .then(function (unlockResponse) {
-        console.log('[TORRENTIO PLAY] unlock response', unlockResponse);
         console.log('[TORRENTIO PLAY] unlock response object', unlockResponse);
 
         if (!unlockResponse || !unlockResponse.link) {
@@ -1789,7 +1884,6 @@
           return Promise.reject(noLinkErr);
         }
 
-        console.log('[TORRENTIO PLAY] final player url', unlockResponse.link);
         console.log('[TORRENTIO PLAY] player url', unlockResponse.link);
 
         Lampa.Loading.stop();
