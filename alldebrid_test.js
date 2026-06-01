@@ -165,31 +165,49 @@
 
         url += (url.indexOf('?') >= 0 ? '&' : '?') + parts.join('&');
 
+        console.log('[AllDebrid] REQUEST', method, url, params);
+
         network.silent(
           url,
           function (json) {
+            console.log('[AllDebrid] RESPONSE', json);
+
             if (json && json.status === 'success') resolve(json.data);
-            else reject(json || new Error('AllDebrid request failed'));
+            else {
+              console.error('[AllDebrid] API ERROR', json);
+              reject(json || new Error('AllDebrid request failed'));
+            }
           },
           function (a, c) {
+            console.error('[AllDebrid] REQUEST FAILED', a, c);
             reject(new Error(network.errorDecode(a, c) || 'Network error'));
           }
         );
       } else {
+        var postBody = encodeFormBody(params, apiKey);
+
+        console.log('[AllDebrid] REQUEST', method, url, params);
+
         network.native(
           url,
           function (json) {
+            console.log('[AllDebrid] RESPONSE', json);
+
             if (json && json.status === 'success') resolve(json.data);
-            else reject(json || new Error('AllDebrid request failed'));
+            else {
+              console.error('[AllDebrid] API ERROR', json);
+              reject(json || new Error('AllDebrid request failed'));
+            }
           },
           function (a, c) {
+            console.error('[AllDebrid] REQUEST FAILED', a, c);
             reject(new Error(network.errorDecode(a, c) || 'Network error'));
           },
           false,
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: encodeFormBody(params, apiKey)
+            body: postBody
           }
         );
       }
@@ -281,6 +299,8 @@
     var results = [];
     var seen = {};
 
+    console.log('[AllDebrid] queries', queries);
+
     function pushResult(item) {
       var key = item.hash || item.title;
       if (!key || seen[key]) return;
@@ -290,6 +310,8 @@
 
     return fetchReadyMagnets()
       .then(function (readyList) {
+        console.log('[AllDebrid] ready magnets', readyList);
+
         readyList.forEach(function (m) {
           if (!matchesMovie(m.filename, info)) return;
 
@@ -310,14 +332,19 @@
         queries.forEach(function (query) {
           chain = chain
             .then(function () {
+              console.log('[AllDebrid] indexer query', query);
               return fetchIndexerResults(query);
             })
             .then(function (rows) {
+              console.log('[AllDebrid] indexer results', rows);
+
               var hashes = rows.map(function (r) {
                 return r.hash;
               });
 
               return checkInstantAvailability(hashes).then(function (cachedMap) {
+                console.log('[AllDebrid] instant cache', cachedMap);
+
                 rows.forEach(function (row) {
                   if (!cachedMap[row.hash]) return;
 
@@ -428,6 +455,9 @@
 
     var info = extractMovieInfo(movie);
 
+    console.log('[AllDebrid] movie', movie);
+    console.log('[AllDebrid] movie info', info);
+
     if (!ensureApiKeyConfigured()) {
       return;
     }
@@ -444,7 +474,12 @@
       })
       .catch(function (err) {
         Lampa.Loading.stop();
-        console.error('[AllDebrid] search error:', err);
+
+        console.group('[AllDebrid] SEARCH ERROR');
+        console.error(err);
+        console.error(err && err.stack);
+        console.groupEnd();
+
         Lampa.Noty.show('AllDebrid: ' + (err.message || 'search failed'));
         showMovieInfoModal(info);
       });
