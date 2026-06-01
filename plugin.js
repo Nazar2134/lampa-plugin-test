@@ -10,6 +10,10 @@
   var MAX_SEARCH_QUERIES = 3;
   var APIBAY_URL = 'https://apibay.org/q.php';
   var TORRENTIO_BASE = 'https://torrentio.strem.fun';
+  /** Render proxy — sole client for torrentio /resolve (no direct browser resolve). */
+  var RENDER_PROXY_URL = 'https://lampa-plugin-test.onrender.com';
+  /** Optional: same value as Render env PROXY_API_KEY → sent as X-Proxy-Key. */
+  var RENDER_PROXY_KEY = '';
 
   if (window.plugin_alldebrid) return;
   window.plugin_alldebrid = true;
@@ -1731,87 +1735,92 @@
     return /^https?:\/\//i.test(u);
   }
 
-  function extractUrlFromNativeResolveData(data) {
-    if (data && typeof data === 'object' && data.url) {
-      return String(data.url).trim();
+  function isBlockedDirectResolveFetchUrl(url) {
+    var u = String(url || '');
+    return /torrentio\.strem\.fun\/resolve\//i.test(u) || /\.debrid\.it\//i.test(u);
+  }
+
+  function buildRenderProxyResolveRequestUrl(torrentioResolveUrl) {
+    var base = String(RENDER_PROXY_URL || '').replace(/\/$/, '');
+    if (!base) {
+      throw new Error('RENDER_PROXY_URL is not configured');
     }
-
-    var text = typeof data === 'string' ? data.trim() : '';
-
-    if (/^https?:\/\//i.test(text)) {
-      return text;
-    }
-
-    if (text) {
-      try {
-        var parsed = JSON.parse(text);
-        if (parsed && parsed.url) {
-          return String(parsed.url).trim();
-        }
-      } catch (e) {
-        /* not JSON */
-      }
-    }
-
-    return '';
+    return base + '/resolve?url=' + encodeURIComponent(torrentioResolveUrl);
   }
 
   /**
-   * Resolve torrentio.strem.fun/resolve/... via Lampa native HTTP only (not unlock API).
+   * Torrentio /resolve → host link via Render only (never fetch torrentio or debrid.it in browser).
    */
   function nativeTorrentioResolve(torrentioResolveUrl) {
     return new Promise(function (resolve, reject) {
       if (!isTorrentioResolvePlayUrl(torrentioResolveUrl)) {
-        reject(new Error('nativeTorrentioResolve: not a torrentio resolve URL'));
+        reject(new Error('Not a torrentio resolve URL'));
         return;
       }
 
-      function onNativeData(data) {
-        console.log('[TORRENTIO PLAY] native response body', data);
-        console.log('[TORRENTIO PLAY] native response type', typeof data);
-
-        var hostLink = extractUrlFromNativeResolveData(data);
-
-        console.log('[TORRENTIO PLAY] native extracted host url', hostLink);
-        console.log('[TORRENTIO PLAY] native resolved result', hostLink);
-
-        if (!hostLink) {
-          reject(new Error('Native resolve returned no host link'));
-          return;
-        }
-
-        if (isTorrentioResolvePlayUrl(hostLink)) {
-          reject(new Error('Native returned torrentio resolve URL instead of host link'));
-          return;
-        }
-
-        if (!isUnlockableHostLink(hostLink)) {
-          reject(new Error('Native returned non-host URL'));
-          return;
-        }
-
-        resolve(hostLink);
+      if (typeof window.fetch !== 'function') {
+        reject(new Error('fetch is not available for Render proxy'));
+        return;
       }
 
-      function onNativeError(err) {
-        reject(err || new Error('Native resolve failed'));
+      var proxyRequestUrl;
+
+      try {
+        proxyRequestUrl = buildRenderProxyResolveRequestUrl(torrentioResolveUrl);
+      } catch (e) {
+        reject(e);
+        return;
       }
 
-      if (typeof Android !== 'undefined' && typeof Android.httpReq === 'function') {
-        Android.httpReq({ url: torrentioResolveUrl, timeout: 30000 }, {
-          complite: onNativeData,
-          error: onNativeError
+      if (isBlockedDirectResolveFetchUrl(proxyRequestUrl)) {
+        reject(new Error('Invalid proxy request URL'));
+        return;
+      }
+
+      console.log('[TORRENTIO PROXY] request', proxyRequestUrl.split('?')[0] + '/resolve?url=(encoded)');
+
+      var headers = {};
+      if (RENDER_PROXY_KEY) {
+        headers['X-Proxy-Key'] = RENDER_PROXY_KEY;
+      }
+
+      window
+        .fetch(proxyRequestUrl, { method: 'GET', mode: 'cors', headers: headers })
+        .then(function (response) {
+          return response.json().then(function (data) {
+            return { status: response.status, data: data };
+          });
+        })
+        .then(function (result) {
+          var data = result.data;
+
+          console.log('[TORRENTIO PROXY] response', data);
+
+          if (!data || !data.ok || !data.url) {
+            reject(
+              new Error(
+                (data && data.error) || 'Render resolve failed (HTTP ' + result.status + ')'
+              )
+            );
+            return;
+          }
+
+          var hostLink = String(data.url).trim();
+
+          if (
+            !hostLink ||
+            isTorrentioResolvePlayUrl(hostLink) ||
+            !isUnlockableHostLink(hostLink)
+          ) {
+            reject(new Error('Render proxy returned invalid host link'));
+            return;
+          }
+
+          resolve(hostLink);
+        })
+        .catch(function (err) {
+          reject(err || new Error('Render resolve failed'));
         });
-        return;
-      }
-
-      if (typeof Lampa === 'undefined' || typeof Lampa.Reguest !== 'function') {
-        reject(new Error('Lampa.Reguest is not available'));
-        return;
-      }
-
-      var req = new Lampa.Reguest();
-      req.native(torrentioResolveUrl, onNativeData, onNativeError);
     });
   }
 
@@ -1835,7 +1844,7 @@
   }
 
   /**
-   * Torrentio playback: native(resolve) → unlockLink(host) → Player.
+   * Torrentio playback: Render(resolve) → unlockLink(host) → Player.
    * unlockLink is never called with torrentio.strem.fun resolve URLs.
    */
   function playTorrentioStream(stream, movie, info, row) {
@@ -1866,17 +1875,15 @@
     nativeTorrentioResolve(playUrl)
       .then(function (hostLink) {
         if (!isUnlockableHostLink(hostLink) || isTorrentioResolvePlayUrl(hostLink)) {
-          var hostErr = new Error('No unlockable host link after native resolve');
+          var hostErr = new Error('No unlockable host link after Render resolve');
           console.log('[TORRENTIO PLAY] unlock failed', hostErr.message, hostLink);
           return Promise.reject(hostErr);
         }
 
-        console.log('[TORRENTIO PLAY] unlock request', hostLink);
-
         return unlockLink(hostLink);
       })
       .then(function (unlockResponse) {
-        console.log('[TORRENTIO PLAY] unlock response object', unlockResponse);
+        console.log('[TORRENTIO PLAY] unlocked', unlockResponse);
 
         if (!unlockResponse || !unlockResponse.link) {
           var noLinkErr = new Error('unlockLink returned no link');
@@ -1884,7 +1891,7 @@
           return Promise.reject(noLinkErr);
         }
 
-        console.log('[TORRENTIO PLAY] player url', unlockResponse.link);
+        console.log('[TORRENTIO PLAY] final url', unlockResponse.link);
 
         Lampa.Loading.stop();
 
