@@ -1,8 +1,8 @@
 {
   "name": "apibay-proxy",
   "version": "1.0.0",
+  "description": "ApiBay proxy for Lampa",
   "main": "server.js",
-  "type": "module",
   "scripts": {
     "start": "node server.js"
   },
