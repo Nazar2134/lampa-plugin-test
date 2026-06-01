@@ -1125,6 +1125,10 @@
     return (' ' + haystack + ' ').indexOf(' ' + word + ' ') >= 0;
   }
 
+  function isWidowDiagnosticFilename(str) {
+    return /widows?/i.test(String(str || ''));
+  }
+
   function getSignificantWords(normTitle) {
     if (!normTitle) return [];
 
@@ -1188,6 +1192,7 @@
     if (!normTitle || !normFilename) return 0;
 
     var score = 0;
+    var widowDiag = isWidowDiagnosticFilename(normFilename);
 
     if (normFilename.indexOf(normTitle) >= 0) {
       score = 1;
@@ -1200,6 +1205,17 @@
 
     var words = getSignificantWords(normTitle);
     if (!words.length) {
+      if (widowDiag) {
+        console.log('[WIDOW MATCH DIAG] scoreTitleAgainstFilename', {
+          normTitle: normTitle,
+          normFilename: normFilename,
+          compactTitle: compactTitle,
+          words: words,
+          matchedWordCount: 0,
+          finalScore: score,
+          threshold: MIN_MATCH_SCORE
+        });
+      }
       return score;
     }
 
@@ -1223,7 +1239,21 @@
       score *= 0.5;
     }
 
-    return Math.min(1, score);
+    var finalScore = Math.min(1, score);
+
+    if (widowDiag) {
+      console.log('[WIDOW MATCH DIAG] scoreTitleAgainstFilename', {
+        normTitle: normTitle,
+        normFilename: normFilename,
+        compactTitle: compactTitle,
+        words: words,
+        matchedWordCount: matched,
+        finalScore: finalScore,
+        threshold: MIN_MATCH_SCORE
+      });
+    }
+
+    return finalScore;
   }
 
   function scoreMovieAgainstFilename(movie, filename) {
@@ -1232,9 +1262,23 @@
 
     var best = 0;
     var variants = movieTitleVariants(movie);
+    var widowDiag = isWidowDiagnosticFilename(filename) || isWidowDiagnosticFilename(normFilename);
 
     for (var i = 0; i < variants.length; i++) {
       best = Math.max(best, scoreTitleAgainstFilename(variants[i], normFilename));
+    }
+
+    if (widowDiag) {
+      console.log('[WIDOW MATCH DIAG] scoreMovieAgainstFilename', {
+        movieTitle: movie.title || movie.name || '',
+        movieOriginalTitle: movie.original_title || movie.original_name || '',
+        filename: filename,
+        normFilename: normFilename,
+        titleVariants: variants,
+        bestScore: best,
+        threshold: MIN_MATCH_SCORE,
+        passesThreshold: best >= MIN_MATCH_SCORE
+      });
     }
 
     return best;
