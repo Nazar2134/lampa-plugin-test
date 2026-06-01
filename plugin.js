@@ -91,6 +91,57 @@
     return n.toFixed(i > 0 ? 1 : 0) + ' ' + units[i];
   }
 
+  function toArray(value) {
+    if (value == null) return [];
+    if (Array.isArray(value)) return value;
+
+    if (typeof value !== 'object') return [];
+
+    if (typeof Object.values === 'function') {
+      return Object.values(value);
+    }
+
+    var arr = [];
+    for (var key in value) {
+      if (Object.prototype.hasOwnProperty.call(value, key)) {
+        arr.push(value[key]);
+      }
+    }
+    return arr;
+  }
+
+  function debugReadyList(readyList, label) {
+    label = label || 'readyList';
+
+    console.log('[DEBUG] ' + label + ' typeof readyList', typeof readyList);
+    console.log('[DEBUG] ' + label + ' Array.isArray', Array.isArray(readyList));
+    console.log('[DEBUG] ' + label + ' readyList', readyList);
+    console.log('[DEBUG] ' + label + ' first item', readyList && readyList[0]);
+
+    var magnets = toArray(readyList);
+
+    console.log('[DEBUG] ' + label + ' normalized length', magnets.length);
+    console.log('[DEBUG] ' + label + ' first normalized item', magnets[0]);
+
+    return magnets;
+  }
+
+  function extractMagnetsFromApiData(data) {
+    console.log('[DEBUG] API response.data', data);
+
+    if (!data) return [];
+
+    if (Array.isArray(data)) return toArray(data);
+
+    if (data.magnets != null) {
+      console.log('[DEBUG] using data.magnets');
+      return debugReadyList(data.magnets, 'data.magnets');
+    }
+
+    console.log('[DEBUG] using data object as magnets list');
+    return debugReadyList(data, 'data');
+  }
+
   function encodeFormBody(params) {
     var parts = [];
 
@@ -316,20 +367,10 @@
     });
   }
 
-  function normalizeMagnetsList(readyList) {
-    console.log('[AllDebrid] readyList type', typeof readyList, Array.isArray(readyList));
-
-    var magnets = Array.isArray(readyList) ? readyList : Object.values(readyList || {});
-
-    console.log('[AllDebrid] normalized magnets', magnets.length);
-
-    return magnets;
-  }
-
   function fetchReadyMagnets() {
     return adRequest('/magnet/status', { status: 'ready' }, 'POST', AD_BASE_V41)
       .then(function (data) {
-        return normalizeMagnetsList((data && data.magnets) || []);
+        return extractMagnetsFromApiData(data);
       })
       .catch(function (err) {
         console.error('[AllDebrid] fetchReadyMagnets failed (continuing search)', err);
@@ -339,43 +380,97 @@
 
   function matchesMovie(name, info) {
     var text = String(name || '').toLowerCase();
-    if (!text) return false;
+    var filename = text;
 
-    var year = info.release_date ? String(info.release_date).slice(0, 4) : '';
-    var hasTitle = false;
+    console.log('[AllDebrid] match check filename:', filename);
 
-    if (info.imdb_id && text.indexOf(String(info.imdb_id).toLowerCase()) >= 0) hasTitle = true;
-
-    if (info.title && text.indexOf(String(info.title).toLowerCase()) >= 0) hasTitle = true;
-
-    if (
-      info.original_title &&
-      text.indexOf(String(info.original_title).toLowerCase()) >= 0
-    ) {
-      hasTitle = true;
+    if (!filename) {
+      console.log('[AllDebrid] match fail: empty filename');
+      return false;
     }
 
-    if (!hasTitle) return false;
+    var year = info.release_date ? String(info.release_date).slice(0, 4) : '';
+    var title = info.title ? String(info.title).toLowerCase() : '';
+    var original = info.original_title ? String(info.original_title).toLowerCase() : '';
 
-    if (year && text.indexOf(year) < 0) {
-      if (!(info.imdb_id && text.indexOf(String(info.imdb_id).toLowerCase()) >= 0)) {
-        return false;
+    console.log('[AllDebrid] match against title:', title);
+    console.log('[AllDebrid] match against original_title:', original);
+    console.log('[AllDebrid] match against year:', year);
+
+    var titleMatch = false;
+
+    if (title && filename.indexOf(title) >= 0) {
+      titleMatch = true;
+      console.log('[AllDebrid] match hit: title');
+    }
+
+    if (original && filename.indexOf(original) >= 0) {
+      titleMatch = true;
+      console.log('[AllDebrid] match hit: original_title');
+    }
+
+    if (!titleMatch) {
+      console.log('[AllDebrid] match fail: no title match');
+      return false;
+    }
+
+    if (year && filename.indexOf(year) < 0) {
+      console.log('[AllDebrid] match fail: year not in filename');
+      return false;
+    }
+
+    console.log('[AllDebrid] match success');
+    return true;
+  }
+
+  function filterMagnetsForMovie(magnets, info) {
+    var list = toArray(magnets);
+
+    console.log('[AllDebrid] filter step 1: input count', list.length);
+
+    if (!Array.isArray(list)) {
+      console.warn('[AllDebrid] filter abort: magnets is not an array after toArray');
+      return [];
+    }
+
+    var matched = [];
+
+    for (var i = 0; i < list.length; i++) {
+      var m = list[i];
+      var label = m && (m.filename || m.name) ? m.filename || m.name : '(no name)';
+
+      console.log('[AllDebrid] filter step 2: index', i, 'name', label);
+
+      if (matchesMovie(label, info)) {
+        console.log('[AllDebrid] filter step 3: KEEP', label);
+        matched.push(m);
+      } else {
+        console.log('[AllDebrid] filter step 3: SKIP', label);
       }
     }
 
-    return true;
+    console.log('[AllDebrid] filter step 4: matched count', matched.length);
+
+    return matched;
   }
 
   function flattenMagnetFiles(nodes, pathPrefix) {
     var out = [];
     var prefix = pathPrefix || '';
+    var list = toArray(nodes);
 
-    (nodes || []).forEach(function (node) {
+    if (!Array.isArray(list)) return out;
+
+    list.forEach(function (node) {
       if (!node) return;
 
-      if (node.e && node.e.length) {
-        var folder = node.n ? prefix + node.n + '/' : prefix;
-        out = out.concat(flattenMagnetFiles(node.e, folder));
+      if (node.e) {
+        var children = toArray(node.e);
+
+        if (children.length) {
+          var folder = node.n ? prefix + node.n + '/' : prefix;
+          out = out.concat(flattenMagnetFiles(children, folder));
+        }
       } else if (node.l) {
         out.push({
           name: prefix + (node.n || 'unknown'),
@@ -389,14 +484,18 @@
   }
 
   function filterVideoFiles(files) {
-    return (files || []).filter(function (f) {
+    var list = toArray(files);
+
+    if (!Array.isArray(list)) return [];
+
+    return list.filter(function (f) {
       return VIDEO_EXT.test(f.name);
     });
   }
 
   function fetchMagnetFiles(magnetId) {
     return adRequest('/magnet/files', { 'id[]': [String(magnetId)] }, 'POST').then(function (data) {
-      var magnets = normalizeMagnetsList((data && data.magnets) || []);
+      var magnets = extractMagnetsFromApiData(data);
       return magnets[0] || { id: magnetId, files: [] };
     });
   }
@@ -533,24 +632,31 @@
     return fetchReadyMagnets().then(function (readyList) {
       console.log('[AllDebrid] ready magnets', readyList);
 
-      var magnets = Array.isArray(readyList) ? readyList : Object.values(readyList || {});
+      var magnets = debugReadyList(readyList, 'fetchReadyMagnets');
 
-      console.log('[AllDebrid] normalized magnets', magnets.length);
+      if (!Array.isArray(magnets)) {
+        console.warn('[AllDebrid] magnets is not an array, forcing toArray');
+        magnets = toArray(magnets);
+      }
 
-      magnets.forEach(function (m) {
-        if (!matchesMovie(m.filename, info)) return;
+      var matched = filterMagnetsForMovie(magnets, info);
+
+      for (var i = 0; i < matched.length; i++) {
+        var m = matched[i];
 
         pushResult({
-          title: m.filename,
+          title: m.filename || m.name || 'Unknown',
           size: formatBytes(m.size),
           seeders: m.seeders != null ? String(m.seeders) : '—',
-          quality: parseQuality(m.filename),
+          quality: parseQuality(m.filename || m.name),
           magnetId: m.id,
           cached: true,
           source: 'alldebrid_library',
           raw: m
         });
-      });
+      }
+
+      console.log('[AllDebrid] results array length', results.length);
 
       return results;
     });
@@ -584,13 +690,20 @@
   }
 
   function showResultsModal(info, results, movie) {
-    if (!results.length) {
+    console.log('[DEBUG] showResultsModal typeof results', typeof results);
+    console.log('[DEBUG] showResultsModal Array.isArray', Array.isArray(results));
+
+    var resultsList = toArray(results);
+
+    console.log('[DEBUG] showResultsModal resultsList length', resultsList.length);
+
+    if (!Array.isArray(resultsList) || !resultsList.length) {
       Lampa.Noty.show('No cached results found');
       showMovieInfoModal(info);
       return;
     }
 
-    var items = results.map(function (row) {
+    var items = resultsList.map(function (row) {
       return {
         title: row.title,
         subtitle:
@@ -602,7 +715,8 @@
           row.quality,
         result: row,
         onSelect: function () {
-          handleResultSelect(row, movie, info);
+          console.log('[AllDebrid] selected result (playback disabled):', row);
+          Lampa.Noty.show('Selected: ' + row.title);
         }
       };
     });
@@ -619,9 +733,14 @@
       separator: true
     });
 
+    var selectItems = Array.isArray(items) ? items : toArray(items);
+
+    console.log('[DEBUG] Select items Array.isArray', Array.isArray(selectItems));
+    console.log('[DEBUG] Select items length', selectItems.length);
+
     Lampa.Select.show({
       title: 'AllDebrid — cached results',
-      items: items,
+      items: selectItems,
       onBack: function () {
         Lampa.Controller.toggle('full_start');
       },
@@ -655,8 +774,11 @@
     searchCachedTorrents(movie)
       .then(function (results) {
         Lampa.Loading.stop();
-        console.log('[AllDebrid] results:', results);
-        showResultsModal(info, results, movie);
+
+        var resultsList = toArray(results);
+
+        console.log('[AllDebrid] results:', resultsList);
+        showResultsModal(info, resultsList, movie);
       })
       .catch(function (err) {
         Lampa.Loading.stop();
