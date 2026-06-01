@@ -41,10 +41,17 @@
   }
 
   function logCall(label, fnName, args, extra) {
-    console.log('[AllDebrid] ' + label + ' → ' + fnName);
-    console.log('[AllDebrid]   arguments:', args);
-    if (extra !== undefined) console.log('[AllDebrid]   extra:', extra);
+    console.group('[AllDebrid] ' + label + '.' + fnName);
+
+    for (var i = 0; i < args.length; i++) {
+      console.log('arg[' + i + ']:', args[i]);
+    }
+
+    if (extra !== undefined) console.log('extra:', extra);
+
     logMovieContext(fnName);
+
+    console.groupEnd();
   }
 
   function wrapMethod(obj, name, label) {
