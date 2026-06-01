@@ -22,6 +22,7 @@
   var lastMovieId = null;
   var lastMountKey = null;
   var buttonSyncTimers = [];
+  var activeSearchId = 0;
 
   function getApiKey() {
     return Lampa.Storage.get('alldebrid_api_key', '');
@@ -70,6 +71,27 @@
       release_date: movie.release_date || movie.first_air_date || '',
       tmdb_id: movie.id != null ? String(movie.id) : ''
     };
+  }
+
+  /** Immutable copy — Lampa mutates activity.card during async API calls. */
+  function snapshotMovie(movie) {
+    if (!movie) return null;
+
+    return {
+      id: movie.id != null ? movie.id : null,
+      title: String(movie.title || movie.name || ''),
+      name: String(movie.name || movie.title || ''),
+      original_title: String(movie.original_title || movie.original_name || ''),
+      original_name: String(movie.original_name || movie.original_title || ''),
+      release_date: movie.release_date || movie.first_air_date || '',
+      first_air_date: movie.first_air_date || movie.release_date || '',
+      imdb_id: movie.imdb_id || '',
+      tmdb_id: movie.id != null ? String(movie.id) : ''
+    };
+  }
+
+  function isSearchStale(searchId) {
+    return searchId != null && searchId !== activeSearchId;
   }
 
   function escapeHtml(str) {
@@ -821,11 +843,16 @@
     };
   }
 
-  function searchPublicCachedTorrents(movie) {
+  function searchPublicCachedTorrents(movie, searchId) {
     console.log('[PIPELINE] searchPublicCachedTorrents — start (path: Parser + apibay → title filter → instant)');
 
     return searchTorrentCandidates(movie)
       .then(function (candidates) {
+        if (isSearchStale(searchId)) {
+          console.log('[PIPELINE] searchPublicCachedTorrents — stale search, abort');
+          return [];
+        }
+
         console.log('[DEBUG] candidate source length (before title filter)', candidates.length);
         logCandidateList(candidates, 'before title filter');
 
@@ -905,11 +932,28 @@
       });
   }
 
-  function searchAccountLibraryFallback(movie) {
+  function searchAccountLibraryFallback(movie, searchId) {
     console.log('[PIPELINE] searchAccountLibraryFallback — start (path: account readyList → title filter)');
+    console.log('[STEP] snapshot movie id', movie && movie.id, 'title', movie && movie.title);
 
     return fetchReadyMagnets().then(function (readyList) {
+      if (isSearchStale(searchId)) {
+        console.log('[STEP] searchAccountLibraryFallback — stale search after fetchReadyMagnets, abort');
+        return [];
+      }
+
+      console.log('[STEP] fetchReadyMagnets output count', toArray(readyList).length);
       console.log('[DEBUG] readyList length', toArray(readyList).length);
+
+      var liveMovie = getActiveMovie();
+      if (liveMovie && movie && String(liveMovie.id) !== String(movie.id)) {
+        console.warn('[STEP] activity.card changed during fetch — was matching wrong movie', {
+          snapshotId: movie.id,
+          snapshotTitle: movie.title,
+          liveId: liveMovie.id,
+          liveTitle: liveMovie.title || liveMovie.name
+        });
+      }
 
       var magnets = debugReadyList(readyList, 'account fallback');
 
@@ -917,15 +961,20 @@
         magnets = toArray(magnets);
       }
 
+      console.log('[STEP] normalized magnets input count', magnets.length);
       console.log('[DEBUG] candidate source length (account, before title filter)', magnets.length);
       logCandidateList(magnets, 'account ready magnets before filter');
 
       var matched = filterMagnetsForMovie(magnets, movie);
 
+      console.log('[STEP] filterMagnetsForMovie output count', matched.length);
       console.log('[DEBUG] candidates length (account, after title filter)', matched.length);
       logCandidateList(matched, 'account after title filter');
+
       var results = [];
       var seen = {};
+
+      console.log('[STEP] buildResultRow input count', matched.length);
 
       for (var i = 0; i < matched.length; i++) {
         var m = matched[i];
@@ -939,6 +988,7 @@
         results.push(row);
       }
 
+      console.log('[STEP] searchAccountLibraryFallback final output count', results.length);
       console.log('[AllDebrid] account fallback results', results.length);
       return results;
     });
@@ -983,6 +1033,7 @@
       .toLowerCase()
       .replace(/[''`]/g, '')
       .replace(/\./g, ' ')
+      .replace(/(\w)\s+s\b/g, '$1s')
       .replace(/[^a-z0-9\s\u0400-\u04ff]/gi, ' ')
       .replace(/\s+/g, ' ')
       .trim();
@@ -990,6 +1041,11 @@
 
   function collapseSpaces(str) {
     return String(str || '').replace(/\s+/g, '');
+  }
+
+  function containsWord(haystack, word) {
+    if (!word || !haystack) return false;
+    return (' ' + haystack + ' ').indexOf(' ' + word + ' ') >= 0;
   }
 
   function getSignificantWords(normTitle) {
@@ -1014,6 +1070,7 @@
     function add(part) {
       var norm = normalizeTitle(part);
       if (!norm || norm.length < 3 || seen[norm]) return;
+      if (/^\d{4}$/.test(norm)) return;
       seen[norm] = true;
       variants.push(norm);
     }
@@ -1071,7 +1128,7 @@
 
     var matched = 0;
     for (var i = 0; i < words.length; i++) {
-      if (normFilename.indexOf(words[i]) >= 0) {
+      if (containsWord(normFilename, words[i])) {
         matched++;
       }
     }
@@ -1115,16 +1172,19 @@
 
   function filterMagnetsForMovie(magnets, movie) {
     var list = toArray(magnets);
+    var movieTitle = movie.title || movie.name || '';
+    var originalTitle = movie.original_title || movie.original_name || '';
     var year = movie.release_date
       ? String(movie.release_date).slice(0, 4)
       : movie.first_air_date
         ? String(movie.first_air_date).slice(0, 4)
         : '';
 
-    console.log('[MATCH] movie.title', movie.title || movie.name);
-    console.log('[MATCH] movie.original_title', movie.original_title || movie.original_name);
+    console.log('[STEP] filterMagnetsForMovie input count', list.length);
+    console.log('[MATCH] movie.title', movieTitle);
+    console.log('[MATCH] movie.original_title', originalTitle);
+    console.log('[MATCH] movie.id', movie.id);
     console.log('[MATCH] movie.year', year);
-    console.log('[MATCH] scanning magnets count', list.length);
     console.log('[PIPELINE] filterMagnetsForMovie — source length:', list.length);
 
     if (!Array.isArray(list)) {
@@ -1138,10 +1198,19 @@
       var m = list[i];
       var filename = m && (m.filename || m.name) ? m.filename || m.name : '';
       var score = scoreMovieAgainstFilename(movie, filename);
+      var matched = score >= MIN_MATCH_SCORE;
+
+      console.log('[MATCH CHECK]', {
+        movieTitle: movieTitle,
+        originalTitle: originalTitle,
+        filename: filename,
+        score: score,
+        matched: matched
+      });
 
       logMatchScore(movie, filename, score);
 
-      if (score >= MIN_MATCH_SCORE) {
+      if (matched) {
         m._matchScore = score;
         scored.push(m);
       }
@@ -1314,12 +1383,17 @@
       });
   }
 
-  function searchCachedTorrents(movie) {
+  function searchCachedTorrents(movie, searchId) {
     var info = extractMovieInfo(movie);
-    console.log('[PIPELINE] searchCachedTorrents — start');
+    console.log('[PIPELINE] searchCachedTorrents — start searchId', searchId);
     console.log('[AllDebrid] search for', info);
 
-    return searchPublicCachedTorrents(movie).then(function (results) {
+    return searchPublicCachedTorrents(movie, searchId).then(function (results) {
+      if (isSearchStale(searchId)) {
+        console.log('[PIPELINE] searchCachedTorrents — stale after public path');
+        return [];
+      }
+
       console.log('[PIPELINE] searchCachedTorrents — public path returned', results.length, 'results');
 
       if (results.length) {
@@ -1328,7 +1402,12 @@
       }
 
       console.log('[PIPELINE] searchCachedTorrents — entering account fallback (public path empty)');
-      return searchAccountLibraryFallback(movie).then(function (fallbackResults) {
+      return searchAccountLibraryFallback(movie, searchId).then(function (fallbackResults) {
+        if (isSearchStale(searchId)) {
+          console.log('[PIPELINE] searchCachedTorrents — stale after account fallback');
+          return [];
+        }
+
         console.log('[PIPELINE] searchCachedTorrents — account fallback returned', fallbackResults.length, 'results');
         return fallbackResults;
       });
@@ -1422,17 +1501,20 @@
   }
 
   function onAllDebridClick() {
-    var movie = getActiveMovie();
+    var movieLive = getActiveMovie();
 
-    if (!movie) {
+    if (!movieLive) {
       Lampa.Noty.show('No movie data');
       return;
     }
 
+    var movie = snapshotMovie(movieLive);
+    var searchId = ++activeSearchId;
     var info = extractMovieInfo(movie);
 
-    console.log('[AllDebrid] movie', movie);
+    console.log('[AllDebrid] movie (snapshot)', movie);
     console.log('[AllDebrid] movie info', info);
+    console.log('[STEP] search started searchId', searchId, 'movie id', movie.id);
 
     if (!ensureApiKeyConfigured()) {
       return;
@@ -1442,8 +1524,14 @@
       Lampa.Loading.stop();
     });
 
-    searchCachedTorrents(movie)
+    searchCachedTorrents(movie, searchId)
       .then(function (results) {
+        if (isSearchStale(searchId)) {
+          console.log('[STEP] ignoring stale search results searchId', searchId);
+          Lampa.Loading.stop();
+          return;
+        }
+
         Lampa.Loading.stop();
 
         var resultsList = toArray(results);
