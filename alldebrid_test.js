@@ -4,84 +4,60 @@
   if (window.plugin_alldebrid) return;
   window.plugin_alldebrid = true;
 
+  var POLL_MS = 1000;
+  var injectedFor = null;
+
   var MOCK_RESULTS = [
-    {
-      title: '1080p WEB-DL',
-      subtitle: 'Cached · 4.2 GB · mock',
-      quality: '1080p',
-      size: '4.2 GB',
-      cached: true
-    },
-    {
-      title: '720p BluRay',
-      subtitle: 'Cached · 2.1 GB · mock',
-      quality: '720p',
-      size: '2.1 GB',
-      cached: true
-    },
-    {
-      title: '2160p REMUX',
-      subtitle: 'Not cached · 45 GB · mock',
-      quality: '2160p',
-      size: '45 GB',
-      cached: false
-    }
+    { title: '1080p WEB-DL', subtitle: 'Cached · 4.2 GB' },
+    { title: '720p BluRay', subtitle: 'Cached · 2.1 GB' },
+    { title: '2160p REMUX', subtitle: 'Mock result' }
   ];
 
-  function log() {
-    var args = ['[AllDebrid]'].concat([].slice.call(arguments));
-    console.log.apply(console, args);
+  function getMovie(activity) {
+    return activity.card || activity.movie || null;
   }
 
-  function getCardMeta(movie) {
-    if (!movie) return { title: '', original_title: '', year: '', is_tv: false };
-
-    var isTv = Boolean(movie.name || movie.first_air_date);
-    var title = movie.title || movie.name || '';
-    var original = movie.original_title || movie.original_name || '';
-    var date = movie.release_date || movie.first_air_date || '';
-    var year = date ? String(date).slice(0, 4) : '';
+  function extractMeta(movie) {
+    if (!movie) {
+      return {
+        title: '',
+        original_title: '',
+        release_date: '',
+        tmdb_id: null
+      };
+    }
 
     return {
-      title: title,
-      original_title: original,
-      year: year,
-      is_tv: isTv,
-      tmdb_id: movie.id,
-      imdb_id: movie.imdb_id || '',
-      raw: movie
+      title: movie.title || movie.name || '',
+      original_title: movie.original_title || movie.original_name || '',
+      release_date: movie.release_date || movie.first_air_date || '',
+      tmdb_id: movie.id != null ? movie.id : null
     };
   }
 
-  function buildSearchQuery(meta) {
-    var parts = [meta.title || meta.original_title];
-    if (meta.year) parts.push(meta.year);
-    return parts.filter(Boolean).join(' ');
-  }
-
-  function showResultsMenu(meta, items, onBack) {
-    var menuItems = items.map(function (item) {
+  function showMenu(meta) {
+    var items = MOCK_RESULTS.map(function (row) {
       return {
-        title: item.title,
-        subtitle: item.subtitle,
-        quality: item.quality,
+        title: row.title,
+        subtitle: row.subtitle,
         onSelect: function () {
-          log('Selected:', item.title, item);
-          Lampa.Noty.show('AllDebrid: ' + item.title + ' (mock)');
+          Lampa.Noty.show('Selected: ' + row.title);
         }
       };
     });
 
-    menuItems.unshift({
-      title: meta.title + (meta.year ? ' (' + meta.year + ')' : ''),
-      subtitle: buildSearchQuery(meta),
+    items.unshift({
+      title: meta.title || 'Unknown',
+      subtitle: [meta.original_title, meta.release_date, meta.tmdb_id ? 'TMDB ' + meta.tmdb_id : '']
+        .filter(Boolean)
+        .join(' · '),
       separator: true
     });
 
     Lampa.Select.show({
       title: 'AllDebrid',
-      items: menuItems,
-      onBack: onBack || function () {
+      items: items,
+      onBack: function () {
         Lampa.Controller.toggle('full_start');
       },
       onSelect: function (el) {
@@ -90,58 +66,79 @@
     });
   }
 
-  function openAllDebrid(movie) {
-    var meta = getCardMeta(movie);
+  function onButtonClick(activity) {
+    var movie = getMovie(activity);
+    var meta = extractMeta(movie);
 
-    log('Metadata:', meta);
-    log('Search query:', buildSearchQuery(meta));
+    console.log('[AllDebrid] meta:', meta);
 
-    showResultsMenu(meta, MOCK_RESULTS);
+    showMenu(meta);
   }
 
-  function addButton() {
-    Lampa.Listener.follow('full', function (e) {
-      if (e.type !== 'complite') return;
-      if (!e.data || !e.data.movie) return;
+  function findMountRoot(activity) {
+    if (!activity.activity || typeof activity.activity.render !== 'function') return null;
 
-      var root = e.object.activity.render();
-      var anchor = root.find('.view--torrent');
-      if (!anchor.length) anchor = root.find('.full-start-new__buttons');
+    var root = activity.activity.render();
+    if (!root || !root.length) return null;
 
-      if (root.find('.button--alldebrid').length) return;
+    var buttons = root.find('.full-start-new__buttons');
+    if (buttons.length) return buttons;
 
-      var btn = $(
-        '<div class="full-start__button selector button--alldebrid">' +
-          '<div class="full-start__icon">' +
-            '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">' +
-              '<path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>' +
-              '<path d="M2 17L12 22L22 17" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>' +
-              '<path d="M2 12L12 17L22 12" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>' +
-            '</svg>' +
-          '</div>' +
-          '<span>AllDebrid</span>' +
-        '</div>'
-      );
+    return root;
+  }
 
-      btn.on('hover:enter', function () {
-        openAllDebrid(e.data.movie);
-      });
+  function injectButton(activity) {
+    var key = activity.card && activity.card.id != null ? String(activity.card.id) : 'full';
+    if (injectedFor === key) return;
 
-      if (anchor.length) anchor.after(btn);
-      else root.find('.full-start-new__buttons').append(btn);
+    var mount = findMountRoot(activity);
+    if (!mount) return;
+
+    if (mount.find('.button--alldebrid').length) {
+      injectedFor = key;
+      return;
+    }
+
+    var btn = $(
+      '<div class="full-start__button selector button--alldebrid">' +
+        '<div class="full-start__icon">' +
+          '<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">' +
+            '<path d="M12 2L2 7l10 5 10-5-10-5zm0 7L2 14l10 5 10-5-10-5zm0 7l-10 5 10 5 10-5-10-5z"/>' +
+          '</svg>' +
+        '</div>' +
+        '<span>AllDebrid</span>' +
+      '</div>'
+    );
+
+    btn.on('hover:enter', function () {
+      onButtonClick(Lampa.Activity.active());
     });
+
+    mount.append(btn);
+    injectedFor = key;
+  }
+
+  function clearInjectedIfNotFull() {
+    var activity = Lampa.Activity.active();
+    if (!activity || activity.component !== 'full') {
+      injectedFor = null;
+    }
+  }
+
+  function poll() {
+    clearInjectedIfNotFull();
+
+    var activity = Lampa.Activity.active();
+
+    if (activity && activity.component === 'full') {
+      injectButton(activity);
+    }
   }
 
   function init() {
-    Lampa.Manifest.plugins = {
-      type: 'other',
-      version: '0.1.0',
-      name: 'AllDebrid',
-      description: 'AllDebrid direct playback (prototype)'
-    };
-
-    addButton();
-    log('plugin ready');
+    setInterval(poll, POLL_MS);
+    poll();
+    console.log('[AllDebrid] plugin ready');
   }
 
   if (window.appready) {
