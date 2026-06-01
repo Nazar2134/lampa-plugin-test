@@ -13,19 +13,31 @@ app.get('/search', async (req, res) => {
   try {
     const q = req.query.q || '';
 
-    const response = await fetch(
-      `https://yts.mx/api/v2/list_movies.json?query_term=${encodeURIComponent(q)}`
-    );
+    console.log('Searching:', q);
 
-    const data = await response.json();
+    const url =
+      `https://yts.mx/api/v2/list_movies.json?query_term=${encodeURIComponent(q)}`;
 
-    res.json(data);
+    console.log('URL:', url);
+
+    const response = await fetch(url);
+
+    console.log('Status:', response.status);
+    console.log('Status Text:', response.statusText);
+
+    const text = await response.text();
+
+    console.log('Response Body:');
+    console.log(text);
+
+    res.status(response.status).send(text);
 
   } catch (err) {
-    console.error(err);
+    console.error('FULL ERROR:', err);
 
     res.status(500).json({
-      error: err.message
+      error: err.message,
+      cause: err.cause?.message || null
     });
   }
 });
