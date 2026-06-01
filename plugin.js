@@ -1748,11 +1748,34 @@
     return base + '/resolve?url=' + encodeURIComponent(torrentioResolveUrl);
   }
 
+  function isRenderProxyRequestUrl(url) {
+    var base = String(RENDER_PROXY_URL || '').replace(/\/$/, '');
+    if (!base) {
+      return false;
+    }
+    return String(url || '').indexOf(base + '/resolve') === 0;
+  }
+
+  /** Playback fetch: Render proxy only — never torrentio /resolve or debrid.it in browser. */
+  function safePlaybackFetch(requestUrl, options) {
+    if (isBlockedDirectResolveFetchUrl(requestUrl)) {
+      return Promise.reject(
+        new Error('Blocked: direct browser fetch to torrentio resolve or debrid.it')
+      );
+    }
+    if (!isRenderProxyRequestUrl(requestUrl)) {
+      return Promise.reject(new Error('Blocked: playback fetch must use Render proxy'));
+    }
+    return window.fetch(requestUrl, options);
+  }
+
   /**
    * Torrentio /resolve → host link via Render only (never fetch torrentio or debrid.it in browser).
    */
   function nativeTorrentioResolve(torrentioResolveUrl) {
     return new Promise(function (resolve, reject) {
+      console.log('[STEP 3] nativeTorrentioResolve');
+
       if (!isTorrentioResolvePlayUrl(torrentioResolveUrl)) {
         reject(new Error('Not a torrentio resolve URL'));
         return;
@@ -1777,15 +1800,14 @@
         return;
       }
 
-      console.log('[TORRENTIO PROXY] request', proxyRequestUrl.split('?')[0] + '/resolve?url=(encoded)');
+      console.log('[STEP 4] TORRENTIO PROXY request', proxyRequestUrl);
 
       var headers = {};
       if (RENDER_PROXY_KEY) {
         headers['X-Proxy-Key'] = RENDER_PROXY_KEY;
       }
 
-      window
-        .fetch(proxyRequestUrl, { method: 'GET', mode: 'cors', headers: headers })
+      safePlaybackFetch(proxyRequestUrl, { method: 'GET', mode: 'cors', headers: headers })
         .then(function (response) {
           return response.json().then(function (data) {
             return { status: response.status, data: data };
@@ -1794,6 +1816,7 @@
         .then(function (result) {
           var data = result.data;
 
+          console.log('[STEP 5] TORRENTIO PROXY response', data);
           console.log('[TORRENTIO PROXY] response', data);
 
           if (!data || !data.ok || !data.url) {
@@ -1848,6 +1871,8 @@
    * unlockLink is never called with torrentio.strem.fun resolve URLs.
    */
   function playTorrentioStream(stream, movie, info, row) {
+    console.log('[STEP 2] playTorrentioStream');
+
     stream = stream || {};
     row = row || {};
 
@@ -1880,6 +1905,8 @@
           return Promise.reject(hostErr);
         }
 
+        console.log('[STEP 6] unlockLink', hostLink);
+
         return unlockLink(hostLink);
       })
       .then(function (unlockResponse) {
@@ -1892,6 +1919,7 @@
         }
 
         console.log('[TORRENTIO PLAY] final url', unlockResponse.link);
+        console.log('[STEP 7] Player.play', unlockResponse.link);
 
         Lampa.Loading.stop();
 
@@ -1922,6 +1950,12 @@
 
     if (!url) {
       Lampa.Noty.show('Unable to create stream');
+      return;
+    }
+
+    if (extra.torrentio && (isTorrentioResolvePlayUrl(url) || /\.debrid\.it\//i.test(String(url)))) {
+      console.log('[TORRENTIO PLAY] unlock failed', 'Blocked direct Player URL (use unlock stream)');
+      Lampa.Noty.show('Invalid stream URL');
       return;
     }
 
@@ -2004,6 +2038,7 @@
     console.log('[AllDebrid] selected result', row);
 
     if (row && row.source === 'torrentio') {
+      console.log('[STEP 1] handleResultSelect');
       playTorrentioStream(row.raw || {}, movie, info, row);
       return;
     }
