@@ -6,7 +6,7 @@ const app = express();
 app.use(cors());
 
 app.get('/', (req, res) => {
-  res.send('ApiBay proxy running');
+  res.send('YTS proxy running');
 });
 
 app.get('/search', async (req, res) => {
@@ -14,15 +14,12 @@ app.get('/search', async (req, res) => {
     const q = req.query.q || '';
 
     const response = await fetch(
-      `https://apibay.org/q.php?q=${encodeURIComponent(q)}`
+      `https://yts.mx/api/v2/list_movies.json?query_term=${encodeURIComponent(q)}`
     );
 
-    const text = await response.text();
+    const data = await response.json();
 
-    console.log('ApiBay response:');
-    console.log(text);
-
-    res.send(text);
+    res.json(data);
 
   } catch (err) {
     console.error(err);
