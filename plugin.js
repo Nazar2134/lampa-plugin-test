@@ -152,11 +152,42 @@
     return url + (url.indexOf('?') >= 0 ? '&' : '?') + parts.join('&');
   }
 
+  function handleAdResponseText(status, text, resolve, reject) {
+    var json = null;
+
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch (parseErr) {
+      console.error('[AllDebrid] JSON PARSE ERROR', parseErr);
+      reject(new Error('Invalid JSON (HTTP ' + status + '): ' + String(text).slice(0, 200)));
+      return;
+    }
+
+    console.log('[AllDebrid] RESPONSE', json);
+
+    if (status >= 200 && status < 300 && json && json.status === 'success') {
+      resolve(json.data);
+      return;
+    }
+
+    if (json && json.error) {
+      console.error('[AllDebrid] API ERROR', json);
+      reject(
+        new Error(
+          (json.error.message || json.error.code || 'AllDebrid API error') + ' (HTTP ' + status + ')'
+        )
+      );
+      return;
+    }
+
+    reject(new Error('HTTP ' + status + ': ' + (text || 'empty response')));
+  }
+
   /**
    * AllDebrid API v4.1:
    * POST https://api.alldebrid.com/v4.1/magnet/status
    * Optional body: status = active | ready | expired | error
-   * Auth: Authorization: Bearer <apikey> (official docs)
+   * Auth: Authorization: Bearer <apikey> (required; agent param removed in v4.1+)
    */
   function adRequest(path, params, method, base) {
     var apiKey = getApiKey();
@@ -169,71 +200,133 @@
     params = params || {};
     base = base || AD_BASE;
 
+    var fullUrl = base + path;
+    var requestUrl = method === 'GET' ? buildUrlWithParams(fullUrl, params) : fullUrl;
+
+    console.log('[AllDebrid] REQUEST', method, requestUrl, params);
+    console.log('[AllDebrid] Authorization', 'Bearer ' + maskApiKey(apiKey), '(header will be sent)');
+    console.log('[AllDebrid] agent', 'not required (removed in AllDebrid API v4.1+)');
+    console.log(
+      '[AllDebrid] endpoint check',
+      path.indexOf('/magnet/status') >= 0
+        ? 'POST /v4.1/magnet/status is correct for listing magnets'
+        : requestUrl
+    );
+
+    if (typeof window.fetch !== 'function') {
+      return adRequestXhr(requestUrl, method, params, apiKey);
+    }
+
+    var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    var timeoutId = setTimeout(function () {
+      if (controller) {
+        console.error('[AllDebrid] FETCH ERROR', 'timeout after 15 seconds');
+        controller.abort();
+      }
+    }, 15000);
+
+    var headers = {
+      Authorization: 'Bearer ' + apiKey
+    };
+
+    var fetchOptions = {
+      method: method,
+      headers: headers,
+      mode: 'cors'
+    };
+
+    if (controller) fetchOptions.signal = controller.signal;
+
+    if (method === 'POST') {
+      headers['Content-Type'] = 'application/x-www-form-urlencoded';
+      fetchOptions.body = encodeFormBody(params);
+      console.log('[AllDebrid] POST BODY', fetchOptions.body);
+    }
+
+    return window
+      .fetch(requestUrl, fetchOptions)
+      .then(function (response) {
+        clearTimeout(timeoutId);
+
+        console.log('[AllDebrid] HTTP STATUS', response.status);
+
+        var headersLog = {};
+        if (response.headers && response.headers.forEach) {
+          response.headers.forEach(function (value, key) {
+            headersLog[key] = value;
+          });
+        }
+
+        console.log('[AllDebrid] RESPONSE HEADERS', headersLog);
+        console.log('[AllDebrid] RESPONSE TYPE (cors/opaque)', response.type);
+
+        if (response.type === 'opaque') {
+          console.error(
+            '[AllDebrid] CORS',
+            'opaque response — browser blocked reading AllDebrid API body'
+          );
+        }
+
+        return response.text().then(function (text) {
+          return { status: response.status, text: text };
+        });
+      })
+      .then(function (result) {
+        console.log('[AllDebrid] RAW RESPONSE', result.text);
+
+        return new Promise(function (resolveInner, rejectInner) {
+          handleAdResponseText(result.status, result.text, resolveInner, rejectInner);
+        });
+      })
+      .catch(function (err) {
+        clearTimeout(timeoutId);
+        console.error('[AllDebrid] FETCH ERROR', err);
+
+        if (err && err.name === 'AbortError') {
+          throw new Error('Request timeout (15s)');
+        }
+
+        var msg = String((err && err.message) || err || '').toLowerCase();
+
+        if (msg.indexOf('failed to fetch') >= 0 || msg.indexOf('network') >= 0) {
+          console.error(
+            '[AllDebrid] CORS',
+            'likely blocked — Lampa WebView may not allow direct https://api.alldebrid.com calls'
+          );
+        }
+
+        throw err;
+      });
+  }
+
+  function adRequestXhr(requestUrl, method, params, apiKey) {
     return new Promise(function (resolve, reject) {
-      var fullUrl = base + path;
-      var requestUrl = method === 'GET' ? buildUrlWithParams(fullUrl, params) : fullUrl;
-
-      console.log('[AllDebrid] REQUEST', method, requestUrl, params);
-
       var xhr = new XMLHttpRequest();
       xhr.open(method, requestUrl, true);
-      xhr.timeout = 30000;
+      xhr.timeout = 15000;
       xhr.setRequestHeader('Authorization', 'Bearer ' + apiKey);
 
-      function finishWithResponse() {
-        var status = xhr.status;
-        var responseText = xhr.responseText || '';
-
-        console.log('[AllDebrid] HTTP STATUS', status);
-        console.log('[AllDebrid] RAW RESPONSE', responseText);
-
-        var json = null;
-
-        try {
-          json = responseText ? JSON.parse(responseText) : null;
-        } catch (parseErr) {
-          console.error('[AllDebrid] JSON PARSE ERROR', parseErr);
-          reject(
-            new Error('Invalid JSON (HTTP ' + status + '): ' + responseText.slice(0, 200))
-          );
-          return;
-        }
-
-        console.log('[AllDebrid] RESPONSE', json);
-
-        if (status >= 200 && status < 300 && json && json.status === 'success') {
-          resolve(json.data);
-          return;
-        }
-
-        if (json && json.error) {
-          console.error('[AllDebrid] API ERROR', json);
-          reject(
-            new Error(
-              (json.error.message || json.error.code || 'AllDebrid API error') +
-                ' (HTTP ' +
-                status +
-                ')'
-            )
-          );
-          return;
-        }
-
-        reject(new Error('HTTP ' + status + ': ' + (responseText || 'empty response')));
-      }
-
-      xhr.onload = finishWithResponse;
-
-      xhr.onerror = function () {
-        console.error('[AllDebrid] REQUEST FAILED', 'onerror', xhr.status, xhr.responseText);
+      xhr.onload = function () {
         console.log('[AllDebrid] HTTP STATUS', xhr.status);
         console.log('[AllDebrid] RAW RESPONSE', xhr.responseText || '');
+        handleAdResponseText(xhr.status, xhr.responseText || '', resolve, reject);
+      };
+
+      xhr.onerror = function () {
+        console.error('[AllDebrid] FETCH ERROR', 'xhr.onerror', xhr.status, xhr.responseText);
+        console.log('[AllDebrid] HTTP STATUS', xhr.status);
+        console.log('[AllDebrid] RAW RESPONSE', xhr.responseText || '');
+
+        if (xhr.status === 0) {
+          console.error('[AllDebrid] CORS', 'HTTP 0 — request blocked or no response (often CORS)');
+        }
+
         reject(new Error('Network error (HTTP ' + xhr.status + ')'));
       };
 
       xhr.ontimeout = function () {
-        console.error('[AllDebrid] REQUEST FAILED', 'timeout');
-        reject(new Error('Request timeout'));
+        console.error('[AllDebrid] FETCH ERROR', 'xhr timeout (15s)');
+        reject(new Error('Request timeout (15s)'));
       };
 
       if (method === 'POST') {
