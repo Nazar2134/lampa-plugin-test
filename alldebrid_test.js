@@ -43,8 +43,10 @@
   function logCall(label, fnName, args) {
     console.group('[AllDebrid] ' + label + '.' + fnName);
 
+    console.log('args.length =', args.length);
+
     for (var i = 0; i < args.length; i++) {
-      console.log('arg[' + i + ']:', args[i]);
+      console.log('arg[' + i + ']', args[i]);
     }
 
     console.trace();
