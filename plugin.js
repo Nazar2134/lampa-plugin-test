@@ -47,6 +47,63 @@
     return true;
   }
 
+  /**
+   * Movie/card data sources in this plugin:
+   * - getActiveMovie()           → Lampa.Activity.active().movie || .card
+   * - snapshotMovie()            → frozen copy at AllDebrid click (used for search)
+   * - buildSearchQueries()       → reads activity.search / search_one / search_two
+   * - getMovieForButton()        → full event data.movie || props.get('movie') || getActiveMovie()
+   * - syncAllDebridButton()      → getMovieForButton(fullEvent) || getActiveMovie()
+   * - onAllDebridClick()         → getActiveMovie() → snapshotMovie() → searchCachedTorrents(movie)
+   * - searchCachedTorrents(movie) → passes snapshot to public + account paths
+   * - searchAccountLibraryFallback → compares snapshot vs getActiveMovie() after async fetch
+   * Not used: currentMovie, cachedMovie, selectedMovie (no such vars in plugin)
+   * - lastMovieId                → button UI only, NOT search matching
+   */
+  function logMovieDataSources(label, searchMovie) {
+    var activity = Lampa.Activity.active();
+    var liveMovie = null;
+    var liveCard = null;
+
+    if (activity) {
+      liveMovie = activity.movie || null;
+      liveCard = activity.card || null;
+    }
+
+    var liveFromGetter = getActiveMovie();
+
+    console.group('[MOVIE DATA] ' + (label || 'unknown'));
+    console.log('[ACTIVE ACTIVITY]', activity);
+    console.log('[ACTIVE MOVIE]', liveMovie);
+    console.log('[ACTIVE CARD]', liveCard);
+    console.log('[SEARCH MOVIE]', searchMovie);
+    console.log('[LIVE getActiveMovie()]', liveFromGetter);
+
+    if (searchMovie && liveFromGetter) {
+      var sameRef = searchMovie === liveFromGetter;
+      var sameId =
+        searchMovie.id != null &&
+        liveFromGetter.id != null &&
+        String(searchMovie.id) === String(liveFromGetter.id);
+
+      console.log('[COMPARE] same object reference:', sameRef);
+      console.log('[COMPARE] same id:', sameId);
+      console.log('[COMPARE] search title:', searchMovie.title || searchMovie.name);
+      console.log('[COMPARE] live title:', liveFromGetter.title || liveFromGetter.name);
+    }
+
+    if (searchMovie && liveMovie && searchMovie !== liveMovie) {
+      console.log('[COMPARE] search vs activity.movie id', searchMovie.id, liveMovie.id);
+    }
+
+    if (searchMovie && liveCard && searchMovie !== liveCard) {
+      console.log('[COMPARE] search vs activity.card id', searchMovie.id, liveCard.id);
+    }
+
+    console.log('[BUTTON STATE] lastMovieId (UI only):', lastMovieId);
+    console.groupEnd();
+  }
+
   function getActiveMovie() {
     var activity = Lampa.Activity.active();
     if (!activity) return null;
@@ -445,6 +502,8 @@
   }
 
   function buildSearchQueries(movie) {
+    logMovieDataSources('buildSearchQueries', movie);
+
     var info = extractMovieInfo(movie);
     var year = info.release_date ? String(info.release_date).slice(0, 4) : '';
     var queries = [];
@@ -555,6 +614,7 @@
   function searchViaParser(movie, query) {
     return new Promise(function (resolve) {
       if (!Lampa.Parser || typeof Lampa.Parser.get !== 'function') {
+        logMovieDataSources('searchViaParser — skipped (no Parser), movie arg', movie);
         console.log('[AllDebrid] Lampa.Parser not available');
         resolve([]);
         return;
@@ -669,6 +729,8 @@
   }
 
   function searchTorrentCandidates(movie) {
+    logMovieDataSources('searchTorrentCandidates — start', movie);
+
     var queries = buildSearchQueries(movie).slice(0, MAX_SEARCH_QUERIES);
     var tasks = [];
 
@@ -844,6 +906,7 @@
   }
 
   function searchPublicCachedTorrents(movie, searchId) {
+    logMovieDataSources('searchPublicCachedTorrents — start', movie);
     console.log('[PIPELINE] searchPublicCachedTorrents — start (path: Parser + apibay → title filter → instant)');
 
     return searchTorrentCandidates(movie)
@@ -933,6 +996,7 @@
   }
 
   function searchAccountLibraryFallback(movie, searchId) {
+    logMovieDataSources('searchAccountLibraryFallback — start', movie);
     console.log('[PIPELINE] searchAccountLibraryFallback — start (path: account readyList → title filter)');
     console.log('[STEP] snapshot movie id', movie && movie.id, 'title', movie && movie.title);
 
@@ -944,6 +1008,8 @@
 
       console.log('[STEP] fetchReadyMagnets output count', toArray(readyList).length);
       console.log('[DEBUG] readyList length', toArray(readyList).length);
+
+      logMovieDataSources('searchAccountLibraryFallback — after fetchReadyMagnets', movie);
 
       var liveMovie = getActiveMovie();
       if (liveMovie && movie && String(liveMovie.id) !== String(movie.id)) {
@@ -1171,6 +1237,8 @@
   }
 
   function filterMagnetsForMovie(magnets, movie) {
+    logMovieDataSources('filterMagnetsForMovie — start', movie);
+
     var list = toArray(magnets);
     var movieTitle = movie.title || movie.name || '';
     var originalTitle = movie.original_title || movie.original_name || '';
@@ -1384,6 +1452,8 @@
   }
 
   function searchCachedTorrents(movie, searchId) {
+    logMovieDataSources('searchCachedTorrents — start', movie);
+
     var info = extractMovieInfo(movie);
     console.log('[PIPELINE] searchCachedTorrents — start searchId', searchId);
     console.log('[AllDebrid] search for', info);
@@ -1501,7 +1571,13 @@
   }
 
   function onAllDebridClick() {
+    var activity = Lampa.Activity.active();
+    console.log('[ACTIVE ACTIVITY]', activity);
+    console.log('[ACTIVE MOVIE]', activity && activity.movie);
+    console.log('[ACTIVE CARD]', activity && activity.card);
+
     var movieLive = getActiveMovie();
+    logMovieDataSources('onAllDebridClick — live (before snapshot)', movieLive);
 
     if (!movieLive) {
       Lampa.Noty.show('No movie data');
@@ -1509,6 +1585,9 @@
     }
 
     var movie = snapshotMovie(movieLive);
+    console.log('[SEARCH MOVIE]', movie);
+    logMovieDataSources('onAllDebridClick — snapshot (passed to search)', movie);
+
     var searchId = ++activeSearchId;
     var info = extractMovieInfo(movie);
 
@@ -1692,6 +1771,10 @@
       lastMovieId = movieId;
       lastMountKey = mountKey;
       return;
+    }
+
+    if (movieChanged || mountChanged) {
+      logMovieDataSources('syncAllDebridButton — injecting button for card', movie);
     }
 
     console.log('[BUTTON INIT]');
