@@ -20,6 +20,8 @@
   var POLL_MS = 1000;
   var pollTimer = null;
   var lastMovieId = null;
+  var lastMountKey = null;
+  var buttonSyncTimers = [];
 
   function getApiKey() {
     return Lampa.Storage.get('alldebrid_api_key', '');
@@ -1369,14 +1371,84 @@
     return String(movie.id);
   }
 
-  function removeAllDebridButton() {
-    $('.button--alldebrid').off('hover:enter click').remove();
+  function getMovieForButton(fullEvent) {
+    if (fullEvent && fullEvent.data && fullEvent.data.movie) {
+      return fullEvent.data.movie;
+    }
+
+    if (fullEvent && fullEvent.props && fullEvent.props.get) {
+      try {
+        var fromProps = fullEvent.props.get('movie');
+        if (fromProps) return fromProps;
+      } catch (err) {
+        console.warn('[AllDebrid] props.get(movie) failed', err);
+      }
+    }
+
+    return getActiveMovie();
   }
 
-  function injectButton(movie) {
-    var mount = $('.full-start-new__buttons');
-    if (!mount.length) return false;
+  function getMountKey(mount) {
+    if (!mount || !mount.length) return null;
 
+    var node = mount[0];
+    var key = node.getAttribute('data-alldebrid-mount');
+
+    if (!key) {
+      key = 'ad-mount-' + Date.now() + '-' + Math.floor(Math.random() * 100000);
+      node.setAttribute('data-alldebrid-mount', key);
+    }
+
+    return key;
+  }
+
+  function getVisibleButtonMount(fullEvent) {
+    if (fullEvent && fullEvent.body && fullEvent.body.length) {
+      var scoped = fullEvent.body.find('.full-start-new__buttons').first();
+      if (scoped.length) return scoped;
+    }
+
+    var activity = Lampa.Activity.active();
+    if (activity && activity.component === 'full' && activity.activity && activity.activity.render) {
+      var render = activity.activity.render();
+      if (render && render.length) {
+        var activeMount = render.find('.full-start-new__buttons').first();
+        if (activeMount.length) return activeMount;
+      }
+    }
+
+    var picked = null;
+
+    $('.full-start-new__buttons').each(function () {
+      var el = $(this);
+      if (!el.closest('.activity--active').length) return;
+      picked = el;
+      return false;
+    });
+
+    if (picked && picked.length) return picked;
+
+    return $('.full-start-new__buttons').first();
+  }
+
+  function removeAllDebridButton(mount) {
+    var removed = 0;
+
+    if (mount && mount.length) {
+      removed = mount.find('.button--alldebrid').length;
+      mount.find('.button--alldebrid').off('hover:enter click').remove();
+    } else {
+      removed = $('.button--alldebrid').length;
+      $('.button--alldebrid').off('hover:enter click').remove();
+    }
+
+    if (removed) {
+      console.log('[BUTTON REMOVED]');
+    }
+  }
+
+  function createAllDebridButton(mount, movie) {
+    if (!mount || !mount.length) return false;
     if (mount.find('.button--alldebrid').length) return true;
 
     mount.append(
@@ -1392,70 +1464,121 @@
 
     mount.find('.button--alldebrid').on('hover:enter click', onAllDebridClick);
 
-    console.log('[AllDebrid] button injected');
-    console.log('[AllDebrid] movie id', movie && movie.id);
+    console.log('[BUTTON CREATED]');
+    console.log('movie id', movie && movie.id);
     return true;
   }
 
-  function syncAllDebridButton() {
+  function syncAllDebridButton(fullEvent) {
     var activity = Lampa.Activity.active();
-    var movie = getActiveMovie();
-    var movieId = getMovieId(movie);
     var onFullCard = activity && activity.component === 'full';
+    var movie = getMovieForButton(fullEvent);
+    var movieId = getMovieId(movie);
 
     if (!onFullCard || !movie) {
-      if ($('.button--alldebrid').length) {
-        removeAllDebridButton();
+      var active = Lampa.Activity.active();
+      if (!active || active.component !== 'full') {
+        if ($('.button--alldebrid').length) {
+          removeAllDebridButton();
+        }
+        lastMovieId = null;
+        lastMountKey = null;
       }
-      lastMovieId = null;
       return;
     }
 
-    var mount = $('.full-start-new__buttons');
+    var mount = getVisibleButtonMount(fullEvent);
     if (!mount.length) return;
 
+    var mountKey = getMountKey(mount);
     var buttonMissing = !mount.find('.button--alldebrid').length;
     var movieChanged = movieId !== lastMovieId;
+    var mountChanged = mountKey !== lastMountKey;
+    var needsUpdate = buttonMissing || movieChanged || mountChanged;
 
-    if (movieChanged) {
-      console.log('[AllDebrid] activity changed');
-      console.log('[AllDebrid] movie id', movie.id);
+    if (!needsUpdate) return;
 
-      removeAllDebridButton();
+    if (!buttonMissing && (movieChanged || mountChanged)) {
+      removeAllDebridButton(mount);
+    }
+
+    if (mount.find('.button--alldebrid').length) {
       lastMovieId = movieId;
-      injectButton(movie);
+      lastMountKey = mountKey;
       return;
     }
 
-    if (buttonMissing) {
-      injectButton(movie);
-    }
+    console.log('[BUTTON INIT]');
+    console.log('movie id', movie.id);
+
+    createAllDebridButton(mount, movie);
+    lastMovieId = movieId;
+    lastMountKey = mountKey;
   }
 
-  function installActivityListener() {
+  function scheduleButtonSync(delay, fullEvent) {
+    var timer = setTimeout(function () {
+      syncAllDebridButton(fullEvent);
+    }, delay);
+
+    buttonSyncTimers.push(timer);
+  }
+
+  function installCardListeners() {
     if (!Lampa.Listener || !Lampa.Listener.follow) return;
+
+    Lampa.Listener.follow('full', function (e) {
+      if (!e) return;
+
+      if (e.type === 'start') {
+        var startMovie = e.data && e.data.movie;
+        console.log('[BUTTON INIT]');
+        console.log('movie id', startMovie && startMovie.id);
+        scheduleButtonSync(0, e);
+        scheduleButtonSync(150, e);
+        scheduleButtonSync(400, e);
+        scheduleButtonSync(900, e);
+        return;
+      }
+
+      if (e.type === 'complite' || e.type === 'build') {
+        scheduleButtonSync(0, e);
+        scheduleButtonSync(200, e);
+        scheduleButtonSync(600, e);
+      }
+    });
 
     Lampa.Listener.follow('activity', function (e) {
       if (!e || e.component !== 'full') return;
 
       if (e.type === 'destroy') {
+        var active = Lampa.Activity.active();
+        if (active && active.component === 'full') {
+          scheduleButtonSync(100, null);
+          scheduleButtonSync(400, null);
+          return;
+        }
+
         removeAllDebridButton();
         lastMovieId = null;
+        lastMountKey = null;
         return;
       }
 
       if (e.type === 'start' || e.type === 'create' || e.type === 'init') {
-        setTimeout(syncAllDebridButton, 50);
-        setTimeout(syncAllDebridButton, 300);
+        scheduleButtonSync(50, null);
+        scheduleButtonSync(350, null);
       }
     });
   }
 
   function startPolling() {
-    installActivityListener();
-    syncAllDebridButton();
+    installCardListeners();
+    syncAllDebridButton(null);
     if (pollTimer) clearInterval(pollTimer);
-    pollTimer = setInterval(syncAllDebridButton, POLL_MS);
+    pollTimer = setInterval(function () {
+      syncAllDebridButton(null);
+    }, POLL_MS);
   }
 
   function updateApiKeyDisplay(body) {
