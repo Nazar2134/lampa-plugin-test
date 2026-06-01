@@ -1125,8 +1125,12 @@
     return (' ' + haystack + ' ').indexOf(' ' + word + ' ') >= 0;
   }
 
-  function isWidowDiagnosticFilename(str) {
-    return /widows?/i.test(String(str || ''));
+  function isMatchDiagnosticFilename(str) {
+    return /widows?|mummy|undertone/i.test(String(str || ''));
+  }
+
+  function logMatchDiagnostic(tag, payload) {
+    console.log('[MATCH DIAG] ' + tag, payload);
   }
 
   function getSignificantWords(normTitle) {
@@ -1188,11 +1192,13 @@
     return variants;
   }
 
-  function scoreTitleAgainstFilename(normTitle, normFilename) {
+  function scoreTitleAgainstFilename(normTitle, normFilename, originalFilename) {
     if (!normTitle || !normFilename) return 0;
 
     var score = 0;
-    var widowDiag = isWidowDiagnosticFilename(normFilename);
+    var diag =
+      originalFilename &&
+      (isMatchDiagnosticFilename(originalFilename) || isMatchDiagnosticFilename(normFilename));
 
     if (normFilename.indexOf(normTitle) >= 0) {
       score = 1;
@@ -1204,14 +1210,17 @@
     }
 
     var words = getSignificantWords(normTitle);
+    var matchedWords = [];
+
     if (!words.length) {
-      if (widowDiag) {
-        console.log('[WIDOW MATCH DIAG] scoreTitleAgainstFilename', {
-          normTitle: normTitle,
-          normFilename: normFilename,
+      if (diag) {
+        logMatchDiagnostic('scoreTitleAgainstFilename', {
+          originalFilename: originalFilename,
+          normalizedFilename: normFilename,
+          normalizedTitle: normTitle,
           compactTitle: compactTitle,
-          words: words,
-          matchedWordCount: 0,
+          significantWords: words,
+          matchedWords: matchedWords,
           finalScore: score,
           threshold: MIN_MATCH_SCORE
         });
@@ -1223,6 +1232,7 @@
     for (var i = 0; i < words.length; i++) {
       if (containsWord(normFilename, words[i])) {
         matched++;
+        matchedWords.push(words[i]);
       }
     }
 
@@ -1241,13 +1251,14 @@
 
     var finalScore = Math.min(1, score);
 
-    if (widowDiag) {
-      console.log('[WIDOW MATCH DIAG] scoreTitleAgainstFilename', {
-        normTitle: normTitle,
-        normFilename: normFilename,
+    if (diag) {
+      logMatchDiagnostic('scoreTitleAgainstFilename', {
+        originalFilename: originalFilename,
+        normalizedFilename: normFilename,
+        normalizedTitle: normTitle,
         compactTitle: compactTitle,
-        words: words,
-        matchedWordCount: matched,
+        significantWords: words,
+        matchedWords: matchedWords,
         finalScore: finalScore,
         threshold: MIN_MATCH_SCORE
       });
@@ -1262,18 +1273,18 @@
 
     var best = 0;
     var variants = movieTitleVariants(movie);
-    var widowDiag = isWidowDiagnosticFilename(filename) || isWidowDiagnosticFilename(normFilename);
+    var diag = isMatchDiagnosticFilename(filename) || isMatchDiagnosticFilename(normFilename);
 
     for (var i = 0; i < variants.length; i++) {
-      best = Math.max(best, scoreTitleAgainstFilename(variants[i], normFilename));
+      best = Math.max(best, scoreTitleAgainstFilename(variants[i], normFilename, filename));
     }
 
-    if (widowDiag) {
-      console.log('[WIDOW MATCH DIAG] scoreMovieAgainstFilename', {
+    if (diag) {
+      logMatchDiagnostic('scoreMovieAgainstFilename', {
         movieTitle: movie.title || movie.name || '',
         movieOriginalTitle: movie.original_title || movie.original_name || '',
-        filename: filename,
-        normFilename: normFilename,
+        originalFilename: filename,
+        normalizedFilename: normFilename,
         titleVariants: variants,
         bestScore: best,
         threshold: MIN_MATCH_SCORE,
