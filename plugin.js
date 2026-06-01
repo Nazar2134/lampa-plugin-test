@@ -753,6 +753,8 @@
     return Promise.all(tasks).then(function (all) {
       console.log('[PIPELINE] searchTorrentCandidates — Promise.all returned', all.length, 'sources');
       var candidates = mergeTorrentCandidates(all);
+      console.log('[CANDIDATES VARIABLE]', candidates);
+      console.log('[CANDIDATES LENGTH]', candidates.length);
       logCandidateList(candidates, 'public search merged');
       return candidates;
     });
@@ -917,6 +919,9 @@
 
     return searchTorrentCandidates(movie)
       .then(function (candidates) {
+        console.log('[CANDIDATES VARIABLE]', candidates);
+        console.log('[CANDIDATES LENGTH]', candidates.length);
+
         if (isSearchStale(searchId)) {
           console.log('[PIPELINE] searchPublicCachedTorrents — stale search, abort');
           return [];
