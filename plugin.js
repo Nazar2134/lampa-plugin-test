@@ -141,6 +141,184 @@
       });
   }
 
+  function isTorrentioResolveUrl(url) {
+    return /torrentio\.strem\.fun\/resolve\//i.test(String(url || ''));
+  }
+
+  function extractUrlFromResolveBody(data) {
+    if (!data) return '';
+
+    if (typeof data === 'object') {
+      if (data.url) return String(data.url);
+      if (data.link) return String(data.link);
+      if (data.location) return String(data.location);
+      return '';
+    }
+
+    var text = String(data).trim();
+    if (!text) return '';
+
+    if (/^https?:\/\//i.test(text)) return text;
+
+    try {
+      var parsed = JSON.parse(text);
+      if (parsed && parsed.url) return String(parsed.url);
+      if (parsed && parsed.link) return String(parsed.link);
+    } catch (e) {
+      /* not JSON */
+    }
+
+    var match = text.match(/https?:\/\/[^\s"'<>]+/i);
+    return match ? match[0] : '';
+  }
+
+  function xhrResolveFinalUrl(url, method) {
+    return new Promise(function (resolve, reject) {
+      var xhr = new XMLHttpRequest();
+      xhr.open(method || 'HEAD', url, true);
+      xhr.timeout = 25000;
+
+      if (method === 'GET') {
+        xhr.setRequestHeader('Range', 'bytes=0-0');
+      }
+
+      xhr.onload = function () {
+        var finalUrl = xhr.responseURL || url;
+
+        console.log('[TORRENTIO RESOLVE] xhr', {
+          method: method || 'HEAD',
+          status: xhr.status,
+          requestUrl: url,
+          responseURL: xhr.responseURL
+        });
+
+        if (finalUrl && finalUrl !== url) {
+          console.log('[TORRENTIO FINAL URL]', finalUrl);
+          resolve(finalUrl);
+          return;
+        }
+
+        if (method === 'HEAD') {
+          xhrResolveFinalUrl(url, 'GET').then(resolve).catch(reject);
+          return;
+        }
+
+        var fromBody = extractUrlFromResolveBody(xhr.responseText);
+        if (fromBody) {
+          console.log('[TORRENTIO FINAL URL]', fromBody);
+          resolve(fromBody);
+          return;
+        }
+
+        reject(new Error('No final URL after redirect'));
+      };
+
+      xhr.onerror = function () {
+        reject(new Error('XHR network error'));
+      };
+
+      xhr.ontimeout = function () {
+        reject(new Error('XHR timeout'));
+      };
+
+      xhr.send();
+    });
+  }
+
+  function nativeResolveFinalUrl(url) {
+    return new Promise(function (resolve, reject) {
+      if (typeof Lampa === 'undefined' || typeof Lampa.Reguest !== 'function') {
+        reject(new Error('Lampa.Reguest is not available'));
+        return;
+      }
+
+      var req = new Lampa.Reguest();
+
+      req.native(
+        url,
+        function (data) {
+          console.log('[TORRENTIO RESOLVE] native response', data);
+
+          var fromBody = extractUrlFromResolveBody(data);
+          if (fromBody && !isTorrentioResolveUrl(fromBody)) {
+            console.log('[TORRENTIO FINAL URL]', fromBody);
+            resolve(fromBody);
+            return;
+          }
+
+          reject(new Error('Native resolve did not return a final URL'));
+        },
+        function (err) {
+          reject(err || new Error('Native resolve failed'));
+        }
+      );
+    });
+  }
+
+  function fetchResolveFinalUrl(url) {
+    return new Promise(function (resolve, reject) {
+      if (typeof window.fetch !== 'function') {
+        reject(new Error('fetch is not available'));
+        return;
+      }
+
+      var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      var timeoutId = setTimeout(function () {
+        if (controller) controller.abort();
+      }, 25000);
+
+      var opts = { method: 'HEAD', redirect: 'follow', mode: 'cors' };
+      if (controller) opts.signal = controller.signal;
+
+      window
+        .fetch(url, opts)
+        .then(function (response) {
+          clearTimeout(timeoutId);
+
+          console.log('[TORRENTIO RESOLVE] fetch', {
+            status: response.status,
+            type: response.type,
+            url: response.url
+          });
+
+          if (response.url && response.url !== url && !isTorrentioResolveUrl(response.url)) {
+            console.log('[TORRENTIO FINAL URL]', response.url);
+            resolve(response.url);
+            return;
+          }
+
+          reject(new Error('fetch did not expose a final URL'));
+        })
+        .catch(function (err) {
+          clearTimeout(timeoutId);
+          reject(err);
+        });
+    });
+  }
+
+  function resolveTorrentioStreamUrl(resolveUrl) {
+    var url = String(resolveUrl || '').trim();
+
+    if (!url) {
+      return Promise.reject(new Error('Empty resolve URL'));
+    }
+
+    console.log('[TORRENTIO RESOLVE]', url);
+
+    if (!isTorrentioResolveUrl(url)) {
+      console.log('[TORRENTIO FINAL URL]', url);
+      return Promise.resolve(url);
+    }
+
+    return xhrResolveFinalUrl(url, 'HEAD')
+      .catch(function () {
+        return fetchResolveFinalUrl(url);
+      })
+      .catch(function () {
+        return nativeResolveFinalUrl(url);
+      });
+  }
+
   /**
    * Movie/card data sources in this plugin:
    * - getActiveMovie()           → Lampa.Activity.active().movie || .card
@@ -1768,8 +1946,27 @@
         return;
       }
 
-      console.log('[TORRENTIO] play stream.url', playUrl);
-      openLampaPlayer(playUrl, movie, info, row.title);
+      Lampa.Loading.start(function () {
+        Lampa.Loading.stop();
+      });
+
+      resolveTorrentioStreamUrl(playUrl)
+        .then(function (finalUrl) {
+          Lampa.Loading.stop();
+
+          if (!finalUrl || isTorrentioResolveUrl(finalUrl)) {
+            Lampa.Noty.show('Unable to resolve stream URL');
+            return;
+          }
+
+          openLampaPlayer(finalUrl, movie, info, row.title);
+        })
+        .catch(function (err) {
+          Lampa.Loading.stop();
+          console.error('[TORRENTIO] resolve failed', err);
+          Lampa.Noty.show('Unable to resolve stream URL');
+        });
+
       return;
     }
 
