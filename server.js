@@ -151,30 +151,6 @@
   }
 
   /**
-   * DISABLED — JS cannot resolve torrentio/debrid URLs (CORS).
-   * Playback uses playTorrentioStream() → openLampaPlayer() with stream.url only.
-   */
-  function resolveTorrentioStreamUrl() {
-    console.warn('[TORRENTIO] resolveTorrentioStreamUrl is disabled (CORS)');
-    return Promise.reject(new Error('resolveTorrentioStreamUrl disabled'));
-  }
-
-  function xhrResolveFinalUrl() {
-    console.warn('[TORRENTIO] xhrResolveFinalUrl is disabled (CORS)');
-    return Promise.reject(new Error('xhrResolveFinalUrl disabled'));
-  }
-
-  function fetchResolveFinalUrl() {
-    console.warn('[TORRENTIO] fetchResolveFinalUrl is disabled (CORS)');
-    return Promise.reject(new Error('fetchResolveFinalUrl disabled'));
-  }
-
-  function nativeResolveFinalUrl() {
-    console.warn('[TORRENTIO] nativeResolveFinalUrl is disabled (CORS)');
-    return Promise.reject(new Error('nativeResolveFinalUrl disabled'));
-  }
-
-  /**
    * Movie/card data sources in this plugin:
    * - getActiveMovie()           → Lampa.Activity.active().movie || .card
    * - snapshotMovie()            → frozen copy at AllDebrid click (used for search)
@@ -1743,6 +1719,93 @@
     return adRequest('/link/unlock', { link: link }, 'POST');
   }
 
+  function isTorrentioResolvePlayUrl(url) {
+    return /torrentio\.strem\.fun\/resolve\/alldebrid\//i.test(String(url || ''));
+  }
+
+  function isDebridHostLink(url) {
+    return /\.debrid\.it\//i.test(String(url || ''));
+  }
+
+  function extractUrlFromNativeResolveData(data) {
+    if (data && typeof data === 'object' && data.url) {
+      return String(data.url).trim();
+    }
+
+    var text = typeof data === 'string' ? data.trim() : '';
+
+    if (/^https?:\/\//i.test(text)) {
+      return text;
+    }
+
+    if (text) {
+      try {
+        var parsed = JSON.parse(text);
+        if (parsed && parsed.url) {
+          return String(parsed.url).trim();
+        }
+      } catch (e) {
+        /* not JSON */
+      }
+    }
+
+    return '';
+  }
+
+  /**
+   * Torrentio playback step 1: Lampa.Reguest().native() on torrentio resolve URL only.
+   * No fetch/XHR/HEAD in plugin; do not call native on debrid.it URLs.
+   */
+  function nativeTorrentioResolve(torrentioResolveUrl) {
+    return new Promise(function (resolve, reject) {
+      if (!isTorrentioResolvePlayUrl(torrentioResolveUrl)) {
+        reject(new Error('nativeTorrentioResolve: not a torrentio resolve URL'));
+        return;
+      }
+
+      if (isDebridHostLink(torrentioResolveUrl)) {
+        reject(new Error('nativeTorrentioResolve: debrid.it must not be resolved in browser'));
+        return;
+      }
+
+      function onNativeData(data) {
+        var hostLink = extractUrlFromNativeResolveData(data);
+
+        if (!hostLink) {
+          reject(new Error('Native resolve returned no host link'));
+          return;
+        }
+
+        if (isDebridHostLink(hostLink) || isTorrentioResolvePlayUrl(hostLink)) {
+          resolve(hostLink);
+          return;
+        }
+
+        reject(new Error('Native resolve returned unexpected URL'));
+      }
+
+      function onNativeError(err) {
+        reject(err || new Error('Native resolve failed'));
+      }
+
+      if (typeof Android !== 'undefined' && typeof Android.httpReq === 'function') {
+        Android.httpReq({ url: torrentioResolveUrl, timeout: 30000 }, {
+          complite: onNativeData,
+          error: onNativeError
+        });
+        return;
+      }
+
+      if (typeof Lampa === 'undefined' || typeof Lampa.Reguest !== 'function') {
+        reject(new Error('Lampa.Reguest is not available'));
+        return;
+      }
+
+      var req = new Lampa.Reguest();
+      req.native(torrentioResolveUrl, onNativeData, onNativeError);
+    });
+  }
+
   function getTorrentioPlayUrl(stream, row) {
     stream = stream || {};
     row = row || {};
@@ -1763,8 +1826,8 @@
   }
 
   /**
-   * Torrentio playback: direct URL → Lampa.Player.play.
-   * No fetch / XMLHttpRequest / HEAD / resolve — player follows redirects natively.
+   * Torrentio playback: native(torrentio resolve) → unlockLink(API) → Player(unlocked only).
+   * No fetch/XHR/HEAD to debrid.it in plugin; never pass hoster or resolve URL to Player.
    */
   function playTorrentioStream(stream, movie, info, row) {
     stream = stream || {};
@@ -1778,24 +1841,57 @@
       return;
     }
 
-    console.log('[TORRENTIO DIRECT PLAY]', {
-      url: playUrl,
-      pickedFrom: picked.source,
-      rowDirectUrl: row.directUrl || '',
-      streamUrl: stream.url || '',
-      streamExternalUrl: stream.externalUrl || ''
-    });
-
-    var extra = {
-      torrentio: true,
-      name: (row && row.title) || stream.name || stream.title || info.title
-    };
-
-    if (stream.behaviorHints && stream.behaviorHints.proxyHeaders) {
-      extra.headers = stream.behaviorHints.proxyHeaders;
+    if (!isTorrentioResolvePlayUrl(playUrl)) {
+      Lampa.Noty.show('Invalid Torrentio stream URL');
+      return;
     }
 
-    openLampaPlayer(playUrl, movie, info, extra.name, extra);
+    console.log('[TORRENTIO PLAY] input', playUrl);
+
+    Lampa.Loading.start(function () {
+      Lampa.Loading.stop();
+    });
+
+    nativeTorrentioResolve(playUrl)
+      .then(function (hostLink) {
+        console.log('[TORRENTIO PLAY] native resolved', hostLink);
+
+        if (isDebridHostLink(hostLink)) {
+          return unlockLink(hostLink);
+        }
+
+        if (isTorrentioResolvePlayUrl(hostLink)) {
+          return unlockLink(hostLink);
+        }
+
+        return Promise.reject(new Error('Unexpected host link after native resolve'));
+      })
+      .then(function (unlockResponse) {
+        if (!unlockResponse || !unlockResponse.link) {
+          return Promise.reject(new Error('unlockLink returned no link'));
+        }
+
+        console.log('[TORRENTIO PLAY] unlocked', unlockResponse.link);
+        console.log('[TORRENTIO PLAY] final player url', unlockResponse.link);
+
+        Lampa.Loading.stop();
+
+        var extra = {
+          torrentio: true,
+          name: (row && row.title) || stream.name || stream.title || info.title
+        };
+
+        if (Lampa.Platform && Lampa.Platform.is && Lampa.Platform.is('android')) {
+          extra.launch_player = 'android';
+        }
+
+        openLampaPlayer(unlockResponse.link, movie, info, extra.name, extra);
+      })
+      .catch(function (err) {
+        Lampa.Loading.stop();
+        console.error('[TORRENTIO PLAY] failed', err);
+        Lampa.Noty.show('Unable to play stream');
+      });
   }
 
   function openLampaPlayer(url, movie, info, fileName, extra) {
@@ -1826,6 +1922,10 @@
 
       if (extra.name) {
         playParams.name = extra.name;
+      }
+
+      if (extra.launch_player) {
+        playParams.launch_player = extra.launch_player;
       }
 
       console.log('[AllDebrid] Player.play', playParams);
@@ -1884,7 +1984,6 @@
     console.log('[AllDebrid] selected result', row);
 
     if (row && row.source === 'torrentio') {
-      console.log('[TORRENTIO DIRECT PLAY] handleResultSelect — no HTTP, direct Player');
       playTorrentioStream(row.raw || {}, movie, info, row);
       return;
     }
@@ -2496,8 +2595,6 @@
     if (!Lampa.Params || !Lampa.Params.select) return;
     if (!Lampa.SettingsApi || !Lampa.SettingsApi.addComponent) return;
 
-    Lampa.Params.select(STORAGE_KEY, '', '');
-
     var iconSvg =
       '<svg height="29" viewBox="0 0 24 24" fill="currentColor">' +
       '<path d="M12 2L2 7l10 5 10-5-10-5zm0 7L2 14l10 5 10-5-10-5zm0 7l-10 5 10 5 10-5-10-5z"/>' +
@@ -2515,6 +2612,7 @@
       param: {
         name: STORAGE_KEY,
         type: 'input',
+        values: '',
         default: ''
       },
       field: {
