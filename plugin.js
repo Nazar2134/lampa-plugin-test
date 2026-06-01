@@ -151,30 +151,6 @@
   }
 
   /**
-   * DISABLED — JS cannot resolve torrentio/debrid URLs (CORS).
-   * Playback uses playTorrentioStream() → openLampaPlayer() with stream.url only.
-   */
-  function resolveTorrentioStreamUrl() {
-    console.warn('[TORRENTIO] resolveTorrentioStreamUrl is disabled (CORS)');
-    return Promise.reject(new Error('resolveTorrentioStreamUrl disabled'));
-  }
-
-  function xhrResolveFinalUrl() {
-    console.warn('[TORRENTIO] xhrResolveFinalUrl is disabled (CORS)');
-    return Promise.reject(new Error('xhrResolveFinalUrl disabled'));
-  }
-
-  function fetchResolveFinalUrl() {
-    console.warn('[TORRENTIO] fetchResolveFinalUrl is disabled (CORS)');
-    return Promise.reject(new Error('fetchResolveFinalUrl disabled'));
-  }
-
-  function nativeResolveFinalUrl() {
-    console.warn('[TORRENTIO] nativeResolveFinalUrl is disabled (CORS)');
-    return Promise.reject(new Error('nativeResolveFinalUrl disabled'));
-  }
-
-  /**
    * Movie/card data sources in this plugin:
    * - getActiveMovie()           → Lampa.Activity.active().movie || .card
    * - snapshotMovie()            → frozen copy at AllDebrid click (used for search)
@@ -1744,75 +1720,7 @@
   }
 
   function isTorrentioResolvePlayUrl(url) {
-    return /torrentio\.strem\.fun\/resolve\//i.test(String(url || ''));
-  }
-
-  function isAllDebridHostPlayUrl(url) {
-    var u = String(url || '');
-    return /\.debrid\.it\//i.test(u) || /alldebrid\.com\//i.test(u);
-  }
-
-  function nativeResolvePlayUrl(url) {
-    return new Promise(function (resolve, reject) {
-      if (typeof Lampa === 'undefined' || typeof Lampa.Reguest !== 'function') {
-        reject(new Error('Lampa.Reguest is not available'));
-        return;
-      }
-
-      console.log('[TORRENTIO PLAY] native resolve', url);
-
-      var req = new Lampa.Reguest();
-
-      req.native(
-        url,
-        function (data) {
-          if (data && typeof data === 'object' && data.url) {
-            resolve(String(data.url));
-            return;
-          }
-
-          var text = typeof data === 'string' ? data.trim() : '';
-          if (/^https?:\/\//i.test(text)) {
-            resolve(text);
-            return;
-          }
-
-          reject(new Error('Native resolve returned no playable URL'));
-        },
-        function (err) {
-          reject(err || new Error('Native resolve failed'));
-        }
-      );
-    });
-  }
-
-  function prepareTorrentioPlayUrl(playUrl) {
-    var url = String(playUrl || '').trim();
-    if (!url) {
-      return Promise.reject(new Error('Empty play URL'));
-    }
-
-    console.log('[TORRENTIO PLAY] input url', url);
-
-    var pipeline = Promise.resolve(url);
-
-    if (isTorrentioResolvePlayUrl(url)) {
-      pipeline = nativeResolvePlayUrl(url);
-    }
-
-    return pipeline.then(function (resolvedUrl) {
-      console.log('[TORRENTIO PLAY] after resolve', resolvedUrl);
-
-      if (!isAllDebridHostPlayUrl(resolvedUrl)) {
-        return resolvedUrl;
-      }
-
-      return unlockLink(resolvedUrl).then(function (response) {
-        var unlocked = (response && response.link) || resolvedUrl;
-        console.log('[TORRENTIO PLAY] after unlock', unlocked);
-        return unlocked;
-      });
-    });
+    return /torrentio\.strem\.fun\/resolve\/alldebrid\//i.test(String(url || ''));
   }
 
   function getTorrentioPlayUrl(stream, row) {
@@ -1835,8 +1743,8 @@
   }
 
   /**
-   * Torrentio playback: resolve (native) → unlock (AllDebrid API) → Player.
-   * Same unlock path as playVideoFile(); no fetch/XHR in the WebView.
+   * Torrentio playback: resolve URL → AllDebrid /link/unlock (server-side) → Player.
+   * No native/fetch/XHR/HEAD to torrentio or debrid.it in the browser.
    */
   function playTorrentioStream(stream, movie, info, row) {
     stream = stream || {};
@@ -1846,24 +1754,44 @@
     var playUrl = picked.url;
 
     if (!playUrl) {
+      console.log('[TORRENTIO PLAY] unlock failed', 'Stream URL is missing');
       Lampa.Noty.show('Stream URL is missing');
       return;
     }
 
-    console.log('[TORRENTIO DIRECT PLAY]', {
-      inputUrl: playUrl,
-      pickedFrom: picked.source,
-      rowDirectUrl: row.directUrl || '',
-      streamUrl: stream.url || '',
-      streamExternalUrl: stream.externalUrl || ''
-    });
+    if (!isTorrentioResolvePlayUrl(playUrl)) {
+      console.log('[TORRENTIO PLAY] unlock failed', 'Invalid Torrentio stream URL', playUrl);
+      Lampa.Noty.show('Invalid Torrentio stream URL');
+      return;
+    }
+
+    console.log('[TORRENTIO PLAY] input', playUrl);
+    console.log(
+      '[TORRENTIO PLAY] native resolved result',
+      '(skipped — nativeTorrentioResolve not used; direct unlockLink)',
+      playUrl
+    );
 
     Lampa.Loading.start(function () {
       Lampa.Loading.stop();
     });
 
-    prepareTorrentioPlayUrl(playUrl)
-      .then(function (finalUrl) {
+    console.log('[TORRENTIO PLAY] unlock request', playUrl);
+
+    unlockLink(playUrl)
+      .then(function (unlockResponse) {
+        console.log('[TORRENTIO PLAY] unlock response', unlockResponse);
+        console.log('[TORRENTIO PLAY] unlock response object', unlockResponse);
+
+        if (!unlockResponse || !unlockResponse.link) {
+          var noLinkErr = new Error('unlockLink returned no link');
+          console.log('[TORRENTIO PLAY] unlock failed', noLinkErr.message, unlockResponse);
+          return Promise.reject(noLinkErr);
+        }
+
+        console.log('[TORRENTIO PLAY] final player url', unlockResponse.link);
+        console.log('[TORRENTIO PLAY] player url', unlockResponse.link);
+
         Lampa.Loading.stop();
 
         var extra = {
@@ -1871,18 +1799,15 @@
           name: (row && row.title) || stream.name || stream.title || info.title
         };
 
-        if (stream.behaviorHints && stream.behaviorHints.proxyHeaders) {
-          extra.headers = stream.behaviorHints.proxyHeaders;
-        }
-
         if (Lampa.Platform && Lampa.Platform.is && Lampa.Platform.is('android')) {
           extra.launch_player = 'android';
         }
 
-        openLampaPlayer(finalUrl, movie, info, extra.name, extra);
+        openLampaPlayer(unlockResponse.link, movie, info, extra.name, extra);
       })
       .catch(function (err) {
         Lampa.Loading.stop();
+        console.log('[TORRENTIO PLAY] unlock failed', err);
         console.error('[TORRENTIO PLAY] failed', err);
         Lampa.Noty.show('Unable to play stream');
       });
@@ -1978,7 +1903,6 @@
     console.log('[AllDebrid] selected result', row);
 
     if (row && row.source === 'torrentio') {
-      console.log('[TORRENTIO DIRECT PLAY] handleResultSelect — no HTTP, direct Player');
       playTorrentioStream(row.raw || {}, movie, info, row);
       return;
     }
