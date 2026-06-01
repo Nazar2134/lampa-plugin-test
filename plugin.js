@@ -2,9 +2,14 @@
   'use strict';
 
   /**
-   * Movie → AllDebrid ready magnets → Match → Select → Files → Unlock → Lampa Player
+   * Movie → public torrent search → instant cache check → results → upload → files → unlock → player
+   * Account ready magnets are fallback only.
    */
   var VIDEO_EXT = /\.(mkv|mp4|avi|mov)$/i;
+  var INSTANT_BATCH = 50;
+  var MAX_CANDIDATES = 150;
+  var MAX_SEARCH_QUERIES = 3;
+  var APIBAY_URL = 'https://apibay.org/q.php';
 
   if (window.plugin_alldebrid) return;
   window.plugin_alldebrid = true;
@@ -13,8 +18,8 @@
   var AD_BASE_V41 = 'https://api.alldebrid.com/v4.1';
   var STORAGE_KEY = 'alldebrid_api_key';
   var POLL_MS = 1000;
-  var buttonAdded = false;
   var pollTimer = null;
+  var lastMovieId = null;
 
   function getApiKey() {
     return Lampa.Storage.get('alldebrid_api_key', '');
@@ -378,6 +383,458 @@
       });
   }
 
+  function buildSearchQueries(movie) {
+    var info = extractMovieInfo(movie);
+    var year = info.release_date ? String(info.release_date).slice(0, 4) : '';
+    var queries = [];
+    var seen = {};
+
+    function add(q) {
+      q = String(q || '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (!q || seen[q]) return;
+      seen[q] = true;
+      queries.push(q);
+    }
+
+    if (info.title) {
+      if (year) add(info.title + ' ' + year);
+      add(info.title);
+    }
+
+    if (info.original_title && info.original_title !== info.title) {
+      if (year) add(info.original_title + ' ' + year);
+      add(info.original_title);
+    }
+
+    var activity = Lampa.Activity.active();
+    if (activity) {
+      add(activity.search);
+      add(activity.search_one);
+      add(activity.search_two);
+    }
+
+    console.log('[AllDebrid] search queries', queries);
+    return queries;
+  }
+
+  function extractInfoHash(magnetOrHash) {
+    var value = String(magnetOrHash || '').trim();
+    if (!value) return '';
+
+    if (/^[a-f0-9]{40}$/i.test(value)) return value.toLowerCase();
+
+    var match = value.match(/btih:([a-f0-9]{40})/i);
+    return match ? match[1].toLowerCase() : '';
+  }
+
+  function requestJson(url, timeoutMs) {
+    timeoutMs = timeoutMs || 15000;
+
+    return new Promise(function (resolve, reject) {
+      if (typeof window.fetch === 'function') {
+        var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        var timeoutId = setTimeout(function () {
+          if (controller) controller.abort();
+        }, timeoutMs);
+
+        var opts = { method: 'GET', mode: 'cors' };
+        if (controller) opts.signal = controller.signal;
+
+        window
+          .fetch(url, opts)
+          .then(function (response) {
+            clearTimeout(timeoutId);
+            return response.text();
+          })
+          .then(function (text) {
+            try {
+              resolve(text ? JSON.parse(text) : null);
+            } catch (err) {
+              reject(err);
+            }
+          })
+          .catch(function (err) {
+            clearTimeout(timeoutId);
+            reject(err);
+          });
+        return;
+      }
+
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', url, true);
+      xhr.timeout = timeoutMs;
+
+      xhr.onload = function () {
+        try {
+          resolve(xhr.responseText ? JSON.parse(xhr.responseText) : null);
+        } catch (err) {
+          reject(err);
+        }
+      };
+
+      xhr.onerror = function () {
+        reject(new Error('Network error'));
+      };
+
+      xhr.ontimeout = function () {
+        reject(new Error('Request timeout'));
+      };
+
+      xhr.send();
+    });
+  }
+
+  function ensureMovieForParser(movie) {
+    if (!movie.genres) movie.genres = [];
+    return movie;
+  }
+
+  function searchViaParser(movie, query) {
+    return new Promise(function (resolve) {
+      if (!Lampa.Parser || typeof Lampa.Parser.get !== 'function') {
+        console.log('[AllDebrid] Lampa.Parser not available');
+        resolve([]);
+        return;
+      }
+
+      if (!query) {
+        resolve([]);
+        return;
+      }
+
+      var params = {
+        search: query,
+        movie: ensureMovieForParser(movie),
+        other: false,
+        global: false
+      };
+
+      console.log('[AllDebrid] Parser.get', query);
+
+      Lampa.Parser.get(
+        params,
+        function (data) {
+          var results = data && data.Results ? data.Results : [];
+          console.log('[AllDebrid] Parser results', results.length);
+          resolve(results);
+        },
+        function (err) {
+          console.warn('[AllDebrid] Parser search failed', err);
+          resolve([]);
+        }
+      );
+    });
+  }
+
+  function searchViaApibay(query) {
+    if (!query) return Promise.resolve([]);
+
+    var url = APIBAY_URL + '?q=' + encodeURIComponent(query) + '&cat=0';
+
+    console.log('[AllDebrid] apibay search', query);
+
+    return requestJson(url)
+      .then(function (data) {
+        if (!Array.isArray(data) || !data.length) return [];
+        if (data[0] && data[0].id === '0' && data[0].name === 'No results returned') return [];
+
+        return data
+          .map(function (item) {
+            var hash = extractInfoHash(item.info_hash);
+            if (!hash) return null;
+
+            return {
+              Title: item.name,
+              filename: item.name,
+              MagnetUri: 'magnet:?xt=urn:btih:' + hash,
+              hash: hash,
+              Size: parseInt(item.size, 10) || 0,
+              Seeders: parseInt(item.seeders, 10) || 0,
+              source: 'apibay'
+            };
+          })
+          .filter(Boolean);
+      })
+      .catch(function (err) {
+        console.warn('[AllDebrid] apibay search failed', err);
+        return [];
+      });
+  }
+
+  function mergeTorrentCandidates(lists) {
+    var merged = [];
+    var hashSeen = {};
+
+    lists.forEach(function (list) {
+      toArray(list).forEach(function (item) {
+        if (!item) return;
+
+        var hash = item.hash || extractInfoHash(item.MagnetUri || item.magnet);
+        if (!hash || hashSeen[hash]) return;
+
+        hashSeen[hash] = true;
+        item.hash = hash;
+        merged.push(item);
+      });
+    });
+
+    merged.sort(function (a, b) {
+      return (b.Seeders || b.seeders || 0) - (a.Seeders || a.seeders || 0);
+    });
+
+    return merged.slice(0, MAX_CANDIDATES);
+  }
+
+  function searchTorrentCandidates(movie) {
+    var queries = buildSearchQueries(movie).slice(0, MAX_SEARCH_QUERIES);
+    var tasks = [];
+
+    queries.forEach(function (query) {
+      tasks.push(searchViaParser(movie, query));
+      tasks.push(searchViaApibay(query));
+    });
+
+    if (!tasks.length) return Promise.resolve([]);
+
+    return Promise.all(tasks).then(function (all) {
+      var candidates = mergeTorrentCandidates(all);
+      console.log('[AllDebrid] merged torrent candidates', candidates.length);
+      return candidates;
+    });
+  }
+
+  function parseInstantMap(data, batchHashes) {
+    var map = {};
+    var magnets = data && data.magnets != null ? data.magnets : data;
+
+    if (Array.isArray(magnets)) {
+      magnets.forEach(function (entry, index) {
+        if (!entry) return;
+
+        var hash = extractInfoHash(entry.hash || entry.magnet || batchHashes[index]);
+        if (!hash) return;
+
+        map[hash] = entry.instant === true || entry.ready === true;
+      });
+      return map;
+    }
+
+    if (magnets && typeof magnets === 'object') {
+      Object.keys(magnets).forEach(function (key) {
+        var entry = magnets[key];
+        var hash = extractInfoHash(
+          (entry && (entry.hash || entry.magnet)) || key
+        );
+        if (!hash) return;
+
+        if (typeof entry === 'boolean') {
+          map[hash] = entry;
+        } else if (entry && typeof entry === 'object') {
+          map[hash] = entry.instant === true || entry.ready === true;
+        }
+      });
+    }
+
+    return map;
+  }
+
+  function checkInstantAvailability(hashes) {
+    var unique = [];
+    var seen = {};
+
+    toArray(hashes).forEach(function (hash) {
+      hash = extractInfoHash(hash);
+      if (hash && !seen[hash]) {
+        seen[hash] = true;
+        unique.push(hash);
+      }
+    });
+
+    if (!unique.length) return Promise.resolve({});
+
+    console.log('[AllDebrid] instant check hashes', unique.length);
+
+    var batches = [];
+    for (var i = 0; i < unique.length; i += INSTANT_BATCH) {
+      batches.push(unique.slice(i, i + INSTANT_BATCH));
+    }
+
+    return batches.reduce(function (chain, batch) {
+      return chain.then(function (combined) {
+        return adRequest('/magnet/instant', { 'magnets[]': batch }, 'GET').then(
+          function (data) {
+            var map = parseInstantMap(data, batch);
+            Object.keys(map).forEach(function (hash) {
+              combined[hash] = map[hash];
+            });
+            console.log('[AllDebrid] instant batch cached', Object.keys(map).filter(function (h) {
+              return map[h];
+            }).length);
+            return combined;
+          }
+        );
+      });
+    }, Promise.resolve({}));
+  }
+
+  function uploadMagnet(magnetOrHash) {
+    var magnet = String(magnetOrHash || '').trim();
+    if (/^[a-f0-9]{40}$/i.test(magnet)) {
+      magnet = 'magnet:?xt=urn:btih:' + magnet;
+    }
+
+    return adRequest('/magnet/upload', { 'magnets[]': [magnet] }, 'POST').then(function (data) {
+      var magnets = data && data.magnets != null ? data.magnets : data;
+      var list = toArray(magnets);
+      return list[0] || null;
+    });
+  }
+
+  function resolveMagnetId(row) {
+    if (row.magnetId != null) return Promise.resolve(row.magnetId);
+
+    var raw = row.raw;
+    if (raw && raw.id != null) return Promise.resolve(raw.id);
+
+    var magnetUri =
+      row.magnetUri ||
+      (raw && (raw.MagnetUri || raw.magnet)) ||
+      (row.hash ? 'magnet:?xt=urn:btih:' + row.hash : '');
+
+    if (!magnetUri && row.hash) {
+      magnetUri = 'magnet:?xt=urn:btih:' + row.hash;
+    }
+
+    if (!magnetUri) {
+      return Promise.reject(new Error('No magnet link'));
+    }
+
+    console.log('[AllDebrid] uploading magnet', magnetUri);
+
+    return uploadMagnet(magnetUri).then(function (uploaded) {
+      if (!uploaded || uploaded.id == null) {
+        throw new Error('Magnet upload failed');
+      }
+      return uploaded.id;
+    });
+  }
+
+  function matchesTorrentCandidate(candidate, movie) {
+    var label =
+      candidate.Title ||
+      candidate.filename ||
+      candidate.name ||
+      candidate.title ||
+      '';
+
+    return matchesMovie({ filename: label, name: label }, movie);
+  }
+
+  function buildResultRow(candidate, source) {
+    var title =
+      candidate.Title ||
+      candidate.filename ||
+      candidate.name ||
+      'Unknown';
+
+    return {
+      title: title,
+      size: formatBytes(candidate.Size || candidate.size),
+      seeders:
+        candidate.Seeders != null
+          ? String(candidate.Seeders)
+          : candidate.seeders != null
+            ? String(candidate.seeders)
+            : '—',
+      quality: parseQuality(title),
+      magnetId: candidate.id != null ? candidate.id : null,
+      hash: candidate.hash,
+      magnetUri: candidate.MagnetUri || candidate.magnet,
+      cached: true,
+      source: source || candidate.source || 'search',
+      raw: candidate
+    };
+  }
+
+  function searchPublicCachedTorrents(movie) {
+    console.log('[AllDebrid] public torrent search');
+
+    return searchTorrentCandidates(movie)
+      .then(function (candidates) {
+        var matched = candidates.filter(function (candidate) {
+          return matchesTorrentCandidate(candidate, movie);
+        });
+
+        console.log('[AllDebrid] title-matched candidates', matched.length);
+
+        if (!matched.length) return [];
+
+        var hashes = matched.map(function (candidate) {
+          return candidate.hash;
+        });
+
+        return checkInstantAvailability(hashes).then(function (instantMap) {
+          var results = [];
+          var seen = {};
+
+          matched.forEach(function (candidate) {
+            if (!instantMap[candidate.hash]) return;
+
+            var row = buildResultRow(candidate, 'instant');
+            var key = row.hash || row.title;
+            if (!key || seen[key]) return;
+
+            seen[key] = true;
+            results.push(row);
+          });
+
+          results.sort(function (a, b) {
+            return parseInt(b.seeders, 10) - parseInt(a.seeders, 10);
+          });
+
+          console.log('[AllDebrid] instant cached results', results.length);
+          return results;
+        });
+      })
+      .catch(function (err) {
+        console.error('[AllDebrid] public search failed', err);
+        return [];
+      });
+  }
+
+  function searchAccountLibraryFallback(movie) {
+    console.log('[AllDebrid] fallback: account ready magnets');
+
+    return fetchReadyMagnets().then(function (readyList) {
+      var magnets = debugReadyList(readyList, 'account fallback');
+
+      if (!Array.isArray(magnets)) {
+        magnets = toArray(magnets);
+      }
+
+      var matched = filterMagnetsForMovie(magnets, movie);
+      var results = [];
+      var seen = {};
+
+      for (var i = 0; i < matched.length; i++) {
+        var m = matched[i];
+        var row = buildResultRow(m, 'alldebrid_library');
+        row.magnetId = m.id;
+
+        var key = String(row.magnetId || row.hash || row.title);
+        if (!key || seen[key]) continue;
+
+        seen[key] = true;
+        results.push(row);
+      }
+
+      console.log('[AllDebrid] account fallback results', results.length);
+      return results;
+    });
+  }
+
   function normalizeTitle(str) {
     return String(str || '')
       .toLowerCase()
@@ -613,20 +1070,16 @@
   }
 
   function handleResultSelect(row, movie, info) {
-    var magnet = row.raw;
-
-    console.log('[AllDebrid] selected magnet', magnet);
-
-    if (!magnet || magnet.id == null) {
-      Lampa.Noty.show('Invalid magnet');
-      return;
-    }
+    console.log('[AllDebrid] selected result', row);
 
     Lampa.Loading.start(function () {
       Lampa.Loading.stop();
     });
 
-    fetchMagnetFiles(magnet.id)
+    resolveMagnetId(row)
+      .then(function (magnetId) {
+        return fetchMagnetFiles(magnetId);
+      })
       .then(function (details) {
         console.log('[AllDebrid] magnet details', details);
 
@@ -657,48 +1110,11 @@
 
   function searchCachedTorrents(movie) {
     var info = extractMovieInfo(movie);
-    var results = [];
-    var seen = {};
-
     console.log('[AllDebrid] search for', info);
 
-    function pushResult(item) {
-      var key = String(item.magnetId || item.title);
-      if (!key || seen[key]) return;
-      seen[key] = true;
-      results.push(item);
-    }
-
-    return fetchReadyMagnets().then(function (readyList) {
-      console.log('[AllDebrid] ready magnets', readyList);
-
-      var magnets = debugReadyList(readyList, 'fetchReadyMagnets');
-
-      if (!Array.isArray(magnets)) {
-        console.warn('[AllDebrid] magnets is not an array, forcing toArray');
-        magnets = toArray(magnets);
-      }
-
-      var matched = filterMagnetsForMovie(magnets, movie);
-
-      for (var i = 0; i < matched.length; i++) {
-        var m = matched[i];
-
-        pushResult({
-          title: m.filename || m.name || 'Unknown',
-          size: formatBytes(m.size),
-          seeders: m.seeders != null ? String(m.seeders) : '—',
-          quality: parseQuality(m.filename || m.name),
-          magnetId: m.id,
-          cached: true,
-          source: 'alldebrid_library',
-          raw: m
-        });
-      }
-
-      console.log('[AllDebrid] results array length', results.length);
-
-      return results;
+    return searchPublicCachedTorrents(movie).then(function (results) {
+      if (results.length) return results;
+      return searchAccountLibraryFallback(movie);
     });
   }
 
@@ -754,8 +1170,7 @@
           row.quality,
         result: row,
         onSelect: function () {
-          console.log('[AllDebrid] selected result (playback disabled):', row);
-          Lampa.Noty.show('Selected: ' + row.title);
+          handleResultSelect(row, movie, info);
         }
       };
     });
@@ -832,15 +1247,20 @@
       });
   }
 
-  function injectButton() {
-    if (buttonAdded) return;
-    if ($('.button--alldebrid').length) {
-      buttonAdded = true;
-      return;
-    }
+  function getMovieId(movie) {
+    if (!movie || movie.id == null) return null;
+    return String(movie.id);
+  }
 
+  function removeAllDebridButton() {
+    $('.button--alldebrid').off('hover:enter click').remove();
+  }
+
+  function injectButton(movie) {
     var mount = $('.full-start-new__buttons');
-    if (!mount.length) return;
+    if (!mount.length) return false;
+
+    if (mount.find('.button--alldebrid').length) return true;
 
     mount.append(
       '<div class="full-start__button selector button--alldebrid">' +
@@ -853,20 +1273,72 @@
       '</div>'
     );
 
-    $('.button--alldebrid').on('hover:enter click', onAllDebridClick);
+    mount.find('.button--alldebrid').on('hover:enter click', onAllDebridClick);
 
-    buttonAdded = true;
-    console.log('[AllDebrid] BUTTON ADDED');
+    console.log('[AllDebrid] button injected');
+    console.log('[AllDebrid] movie id', movie && movie.id);
+    return true;
+  }
 
-    if (pollTimer) {
-      clearInterval(pollTimer);
-      pollTimer = null;
+  function syncAllDebridButton() {
+    var activity = Lampa.Activity.active();
+    var movie = getActiveMovie();
+    var movieId = getMovieId(movie);
+    var onFullCard = activity && activity.component === 'full';
+
+    if (!onFullCard || !movie) {
+      if ($('.button--alldebrid').length) {
+        removeAllDebridButton();
+      }
+      lastMovieId = null;
+      return;
+    }
+
+    var mount = $('.full-start-new__buttons');
+    if (!mount.length) return;
+
+    var buttonMissing = !mount.find('.button--alldebrid').length;
+    var movieChanged = movieId !== lastMovieId;
+
+    if (movieChanged) {
+      console.log('[AllDebrid] activity changed');
+      console.log('[AllDebrid] movie id', movie.id);
+
+      removeAllDebridButton();
+      lastMovieId = movieId;
+      injectButton(movie);
+      return;
+    }
+
+    if (buttonMissing) {
+      injectButton(movie);
     }
   }
 
+  function installActivityListener() {
+    if (!Lampa.Listener || !Lampa.Listener.follow) return;
+
+    Lampa.Listener.follow('activity', function (e) {
+      if (!e || e.component !== 'full') return;
+
+      if (e.type === 'destroy') {
+        removeAllDebridButton();
+        lastMovieId = null;
+        return;
+      }
+
+      if (e.type === 'start' || e.type === 'create' || e.type === 'init') {
+        setTimeout(syncAllDebridButton, 50);
+        setTimeout(syncAllDebridButton, 300);
+      }
+    });
+  }
+
   function startPolling() {
-    injectButton();
-    pollTimer = setInterval(injectButton, POLL_MS);
+    installActivityListener();
+    syncAllDebridButton();
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(syncAllDebridButton, POLL_MS);
   }
 
   function updateApiKeyDisplay(body) {
