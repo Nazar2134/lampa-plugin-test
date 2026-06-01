@@ -1,10 +1,14 @@
 {
-  "name": "apibay-proxy",
+  "name": "torrentio-resolve-proxy",
   "version": "1.0.0",
-  "description": "ApiBay proxy for Lampa",
+  "private": true,
+  "description": "Render proxy: Torrentio resolve → debrid.it host URL (JSON)",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "dependencies": {
     "cors": "^2.8.5",
