@@ -1743,6 +1743,78 @@
     return adRequest('/link/unlock', { link: link }, 'POST');
   }
 
+  function isTorrentioResolvePlayUrl(url) {
+    return /torrentio\.strem\.fun\/resolve\//i.test(String(url || ''));
+  }
+
+  function isAllDebridHostPlayUrl(url) {
+    var u = String(url || '');
+    return /\.debrid\.it\//i.test(u) || /alldebrid\.com\//i.test(u);
+  }
+
+  function nativeResolvePlayUrl(url) {
+    return new Promise(function (resolve, reject) {
+      if (typeof Lampa === 'undefined' || typeof Lampa.Reguest !== 'function') {
+        reject(new Error('Lampa.Reguest is not available'));
+        return;
+      }
+
+      console.log('[TORRENTIO PLAY] native resolve', url);
+
+      var req = new Lampa.Reguest();
+
+      req.native(
+        url,
+        function (data) {
+          if (data && typeof data === 'object' && data.url) {
+            resolve(String(data.url));
+            return;
+          }
+
+          var text = typeof data === 'string' ? data.trim() : '';
+          if (/^https?:\/\//i.test(text)) {
+            resolve(text);
+            return;
+          }
+
+          reject(new Error('Native resolve returned no playable URL'));
+        },
+        function (err) {
+          reject(err || new Error('Native resolve failed'));
+        }
+      );
+    });
+  }
+
+  function prepareTorrentioPlayUrl(playUrl) {
+    var url = String(playUrl || '').trim();
+    if (!url) {
+      return Promise.reject(new Error('Empty play URL'));
+    }
+
+    console.log('[TORRENTIO PLAY] input url', url);
+
+    var pipeline = Promise.resolve(url);
+
+    if (isTorrentioResolvePlayUrl(url)) {
+      pipeline = nativeResolvePlayUrl(url);
+    }
+
+    return pipeline.then(function (resolvedUrl) {
+      console.log('[TORRENTIO PLAY] after resolve', resolvedUrl);
+
+      if (!isAllDebridHostPlayUrl(resolvedUrl)) {
+        return resolvedUrl;
+      }
+
+      return unlockLink(resolvedUrl).then(function (response) {
+        var unlocked = (response && response.link) || resolvedUrl;
+        console.log('[TORRENTIO PLAY] after unlock', unlocked);
+        return unlocked;
+      });
+    });
+  }
+
   function getTorrentioPlayUrl(stream, row) {
     stream = stream || {};
     row = row || {};
@@ -1763,8 +1835,8 @@
   }
 
   /**
-   * Torrentio playback: direct URL → Lampa.Player.play.
-   * No fetch / XMLHttpRequest / HEAD / resolve — player follows redirects natively.
+   * Torrentio playback: resolve (native) → unlock (AllDebrid API) → Player.
+   * Same unlock path as playVideoFile(); no fetch/XHR in the WebView.
    */
   function playTorrentioStream(stream, movie, info, row) {
     stream = stream || {};
@@ -1779,23 +1851,41 @@
     }
 
     console.log('[TORRENTIO DIRECT PLAY]', {
-      url: playUrl,
+      inputUrl: playUrl,
       pickedFrom: picked.source,
       rowDirectUrl: row.directUrl || '',
       streamUrl: stream.url || '',
       streamExternalUrl: stream.externalUrl || ''
     });
 
-    var extra = {
-      torrentio: true,
-      name: (row && row.title) || stream.name || stream.title || info.title
-    };
+    Lampa.Loading.start(function () {
+      Lampa.Loading.stop();
+    });
 
-    if (stream.behaviorHints && stream.behaviorHints.proxyHeaders) {
-      extra.headers = stream.behaviorHints.proxyHeaders;
-    }
+    prepareTorrentioPlayUrl(playUrl)
+      .then(function (finalUrl) {
+        Lampa.Loading.stop();
 
-    openLampaPlayer(playUrl, movie, info, extra.name, extra);
+        var extra = {
+          torrentio: true,
+          name: (row && row.title) || stream.name || stream.title || info.title
+        };
+
+        if (stream.behaviorHints && stream.behaviorHints.proxyHeaders) {
+          extra.headers = stream.behaviorHints.proxyHeaders;
+        }
+
+        if (Lampa.Platform && Lampa.Platform.is && Lampa.Platform.is('android')) {
+          extra.launch_player = 'android';
+        }
+
+        openLampaPlayer(finalUrl, movie, info, extra.name, extra);
+      })
+      .catch(function (err) {
+        Lampa.Loading.stop();
+        console.error('[TORRENTIO PLAY] failed', err);
+        Lampa.Noty.show('Unable to play stream');
+      });
   }
 
   function openLampaPlayer(url, movie, info, fileName, extra) {
@@ -1826,6 +1916,10 @@
 
       if (extra.name) {
         playParams.name = extra.name;
+      }
+
+      if (extra.launch_player) {
+        playParams.launch_player = extra.launch_player;
       }
 
       console.log('[AllDebrid] Player.play', playParams);
