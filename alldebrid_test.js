@@ -163,167 +163,45 @@
     pollTimer = setInterval(injectButton, POLL_MS);
   }
 
-  var APIBAY_PROBE_URL = 'https://apibay.org/q.php?q=matrix';
+  function testApibayNative() {
+    if (typeof Lampa === 'undefined' || typeof Lampa.Reguest !== 'function') {
+      console.log('[APIBAY NATIVE ERROR]', 'Lampa.Reguest not available');
+      return;
+    }
 
-  function probeLampaRequestApis() {
-    console.group('[AllDebrid] Lampa Request / Reguest probe');
+    var finished = false;
 
-    var reguest = typeof Lampa !== 'undefined' ? Lampa.Reguest : undefined;
-    var request = typeof Lampa !== 'undefined' ? Lampa.Request : undefined;
+    function finish() {
+      finished = true;
+    }
 
-    console.log('Lampa.Reguest typeof:', typeof reguest);
-    console.log('Lampa.Request typeof:', typeof request);
-    console.log('Lampa.Reguest === Lampa.Request:', reguest === request);
+    console.log('[APIBAY NATIVE START]');
 
-    console.log('Lampa.Reguest.native typeof:', typeof (reguest && reguest.native));
-    console.log(
-      'Lampa.Reguest.prototype.native typeof:',
-      typeof (reguest && reguest.prototype && reguest.prototype.native)
+    setTimeout(function () {
+      if (!finished) {
+        console.log('[APIBAY NATIVE NO CALLBACK]');
+      }
+    }, 10000);
+
+    var req = new Lampa.Reguest();
+
+    req.native(
+      'https://apibay.org/q.php?q=matrix',
+      function (data) {
+        finish();
+        console.log('[APIBAY NATIVE SUCCESS]', data);
+      },
+      function (err) {
+        finish();
+        console.log('[APIBAY NATIVE ERROR]', err);
+      }
     );
-
-    var instance = null;
-    var instanceNative = null;
-
-    if (typeof reguest === 'function') {
-      try {
-        instance = new reguest();
-        instanceNative = instance && instance.native;
-        console.log('new Lampa.Reguest() OK, instance.native typeof:', typeof instanceNative);
-      } catch (e) {
-        console.warn('new Lampa.Reguest() failed:', e);
-      }
-    }
-
-    function summarizeApibay(label, data, err) {
-      var preview = '';
-      var count = null;
-
-      if (err) {
-        console.log(label + ' — ERROR', err);
-        return;
-      }
-
-      if (typeof data === 'string') {
-        preview = data.slice(0, 200);
-        try {
-          var parsed = JSON.parse(data);
-          count = Array.isArray(parsed) ? parsed.length : null;
-        } catch (parseErr) {
-          count = null;
-        }
-      } else if (Array.isArray(data)) {
-        count = data.length;
-        preview = JSON.stringify(data[0] || {}).slice(0, 200);
-      } else {
-        preview = String(data).slice(0, 200);
-      }
-
-      console.log(label + ' — OK', {
-        type: typeof data,
-        isArray: Array.isArray(data),
-        count: count,
-        preview: preview
-      });
-    }
-
-    function probeFetch() {
-      if (typeof window.fetch !== 'function') {
-        console.log('fetch — not available');
-        return;
-      }
-
-      window
-        .fetch(APIBAY_PROBE_URL, { method: 'GET', mode: 'cors' })
-        .then(function (response) {
-          return response.text().then(function (text) {
-            console.log('fetch — HTTP', response.status, 'type', response.type);
-            if (!response.ok) {
-              summarizeApibay('fetch', null, 'HTTP ' + response.status);
-              return;
-            }
-            summarizeApibay('fetch', text);
-          });
-        })
-        .catch(function (err) {
-          summarizeApibay('fetch', null, err && (err.message || err));
-        });
-    }
-
-    function probeReguestNative() {
-      if (!instance || typeof instanceNative !== 'function') {
-        console.log('Lampa.Reguest#native — not callable on instance');
-        return;
-      }
-
-      instanceNative.call(
-        instance,
-        APIBAY_PROBE_URL,
-        function (data) {
-          summarizeApibay('Lampa.Reguest#native (instance)', data);
-        },
-        function (err) {
-          summarizeApibay(
-            'Lampa.Reguest#native (instance)',
-            null,
-            err && (err.message || err.decode_error || err.status || err)
-          );
-        }
-      );
-    }
-
-    function probeReguestQuiet() {
-      if (!instance || typeof instance.quiet !== 'function') {
-        console.log('Lampa.Reguest#quiet — not available');
-        return;
-      }
-
-      instance.quiet(
-        APIBAY_PROBE_URL,
-        function (data) {
-          summarizeApibay('Lampa.Reguest#quiet (instance)', data);
-        },
-        function (err) {
-          summarizeApibay(
-            'Lampa.Reguest#quiet (instance)',
-            null,
-            err && (err.message || err.decode_error || err.status || err)
-          );
-        }
-      );
-    }
-
-    if (typeof reguest === 'function' && typeof reguest.native === 'function') {
-      try {
-        reguest.native(
-          APIBAY_PROBE_URL,
-          function (data) {
-            summarizeApibay('Lampa.Reguest.native (static)', data);
-          },
-          function (err) {
-            summarizeApibay(
-              'Lampa.Reguest.native (static)',
-              null,
-              err && (err.message || err.decode_error || err.status || err)
-            );
-          }
-        );
-      } catch (e) {
-        console.log('Lampa.Reguest.native (static) — threw', e);
-      }
-    }
-
-    probeFetch();
-    probeReguestNative();
-    probeReguestQuiet();
-
-    console.log('Probe URL:', APIBAY_PROBE_URL);
-    console.groupEnd();
   }
 
   function init() {
     console.log('[AllDebrid] plugin ready');
     installTorrentHooks();
-    probeLampaRequestApis();
+    testApibayNative();
     startPolling();
   }
 
