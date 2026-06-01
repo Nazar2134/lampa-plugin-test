@@ -117,6 +117,19 @@
     return arr;
   }
 
+  function logReadyListItems(readyList, label) {
+    var list = toArray(readyList);
+
+    console.log('[PIPELINE]', label || 'readyList', '— logReadyListItems');
+    console.log('[DEBUG] readyList length', list.length);
+
+    list.forEach(function (item, index) {
+      console.log('[READY]', index, item && (item.filename || item.name || item.title || ''));
+    });
+
+    return list;
+  }
+
   function debugReadyList(readyList, label) {
     label = label || 'readyList';
 
@@ -125,12 +138,32 @@
     console.log('[DEBUG] ' + label + ' readyList', readyList);
     console.log('[DEBUG] ' + label + ' first item', readyList && readyList[0]);
 
-    var magnets = toArray(readyList);
+    var magnets = logReadyListItems(readyList, label);
 
     console.log('[DEBUG] ' + label + ' normalized length', magnets.length);
     console.log('[DEBUG] ' + label + ' first normalized item', magnets[0]);
 
     return magnets;
+  }
+
+  function logCandidateList(candidates, label) {
+    var list = toArray(candidates);
+
+    console.log('[PIPELINE]', label || 'candidates', '— listing', list.length, 'items');
+
+    list.forEach(function (item, index) {
+      var name =
+        (item &&
+          (item.filename ||
+            item.name ||
+            item.title ||
+            item.Title ||
+            '')) ||
+        '';
+      console.log('[CANDIDATE]', index, name);
+    });
+
+    return list;
   }
 
   function extractMagnetsFromApiData(data) {
@@ -375,9 +408,13 @@
   }
 
   function fetchReadyMagnets() {
+    console.log('[PIPELINE] fetchReadyMagnets — request POST /magnet/status status=ready');
+
     return adRequest('/magnet/status', { status: 'ready' }, 'POST', AD_BASE_V41)
       .then(function (data) {
-        return extractMagnetsFromApiData(data);
+        var readyList = extractMagnetsFromApiData(data);
+        console.log('[PIPELINE] fetchReadyMagnets — response normalized count', readyList.length);
+        return readyList;
       })
       .catch(function (err) {
         console.error('[AllDebrid] fetchReadyMagnets failed (continuing search)', err);
@@ -519,7 +556,7 @@
         params,
         function (data) {
           var results = data && data.Results ? data.Results : [];
-          console.log('[AllDebrid] Parser results', results.length);
+          console.log('[PIPELINE] searchViaParser — query:', query, 'raw results:', results.length);
           resolve(results);
         },
         function (err) {
@@ -542,7 +579,7 @@
         if (!Array.isArray(data) || !data.length) return [];
         if (data[0] && data[0].id === '0' && data[0].name === 'No results returned') return [];
 
-        return data
+        var mapped = data
           .map(function (item) {
             var hash = extractInfoHash(item.info_hash);
             if (!hash) return null;
@@ -558,6 +595,9 @@
             };
           })
           .filter(Boolean);
+
+        console.log('[PIPELINE] searchViaApibay — query:', query, 'raw results:', mapped.length);
+        return mapped;
       })
       .catch(function (err) {
         console.warn('[AllDebrid] apibay search failed', err);
@@ -568,6 +608,17 @@
   function mergeTorrentCandidates(lists) {
     var merged = [];
     var hashSeen = {};
+    var totalInput = 0;
+
+    console.log('[PIPELINE] mergeTorrentCandidates — input list count:', lists.length);
+
+    lists.forEach(function (list, listIndex) {
+      var arr = toArray(list);
+      totalInput += arr.length;
+      console.log('[PIPELINE] mergeTorrentCandidates — source[' + listIndex + '] length:', arr.length);
+    });
+
+    console.log('[DEBUG] candidate source length (merge input total)', totalInput);
 
     lists.forEach(function (list) {
       toArray(list).forEach(function (item) {
@@ -582,16 +633,25 @@
       });
     });
 
+    console.log('[PIPELINE] mergeTorrentCandidates — after dedupe:', merged.length);
+
     merged.sort(function (a, b) {
       return (b.Seeders || b.seeders || 0) - (a.Seeders || a.seeders || 0);
     });
 
-    return merged.slice(0, MAX_CANDIDATES);
+    var sliced = merged.slice(0, MAX_CANDIDATES);
+    console.log('[PIPELINE] mergeTorrentCandidates — after MAX_CANDIDATES(' + MAX_CANDIDATES + '):', sliced.length);
+    console.log('[DEBUG] candidates length (post-merge)', sliced.length);
+
+    return sliced;
   }
 
   function searchTorrentCandidates(movie) {
     var queries = buildSearchQueries(movie).slice(0, MAX_SEARCH_QUERIES);
     var tasks = [];
+
+    console.log('[PIPELINE] searchTorrentCandidates — start (public indexers, NOT account readyList)');
+    console.log('[PIPELINE] searchTorrentCandidates — queries:', queries);
 
     queries.forEach(function (query) {
       tasks.push(searchViaParser(movie, query));
@@ -601,8 +661,9 @@
     if (!tasks.length) return Promise.resolve([]);
 
     return Promise.all(tasks).then(function (all) {
+      console.log('[PIPELINE] searchTorrentCandidates — Promise.all returned', all.length, 'sources');
       var candidates = mergeTorrentCandidates(all);
-      console.log('[AllDebrid] merged torrent candidates', candidates.length);
+      logCandidateList(candidates, 'public search merged');
       return candidates;
     });
   }
@@ -761,10 +822,13 @@
   }
 
   function searchPublicCachedTorrents(movie) {
-    console.log('[AllDebrid] public torrent search');
+    console.log('[PIPELINE] searchPublicCachedTorrents — start (path: Parser + apibay → title filter → instant)');
 
     return searchTorrentCandidates(movie)
       .then(function (candidates) {
+        console.log('[DEBUG] candidate source length (before title filter)', candidates.length);
+        logCandidateList(candidates, 'before title filter');
+
         var matched = [];
 
         candidates.forEach(function (candidate) {
@@ -788,15 +852,27 @@
           return (b._matchScore || 0) - (a._matchScore || 0);
         });
 
-        console.log('[AllDebrid] title-matched candidates', matched.length);
+        console.log('[DEBUG] candidates length (after title filter)', matched.length);
+        logCandidateList(matched, 'after title filter');
+        console.log('[PIPELINE] searchPublicCachedTorrents — title-matched:', matched.length);
 
-        if (!matched.length) return [];
+        if (!matched.length) {
+          console.log('[PIPELINE] searchPublicCachedTorrents — no title matches, returning []');
+          return [];
+        }
 
         var hashes = matched.map(function (candidate) {
           return candidate.hash;
         });
 
+        console.log('[PIPELINE] searchPublicCachedTorrents — instant check for', hashes.length, 'hashes');
+
         return checkInstantAvailability(hashes).then(function (instantMap) {
+          var instantHits = Object.keys(instantMap).filter(function (h) {
+            return instantMap[h];
+          }).length;
+          console.log('[PIPELINE] searchPublicCachedTorrents — instant hits:', instantHits, '/', hashes.length);
+
           var results = [];
           var seen = {};
 
@@ -818,7 +894,8 @@
             return parseInt(b.seeders, 10) - parseInt(a.seeders, 10);
           });
 
-          console.log('[AllDebrid] instant cached results', results.length);
+          console.log('[DEBUG] candidates length (after instant filter)', results.length);
+          console.log('[PIPELINE] searchPublicCachedTorrents — final public results:', results.length);
           return results;
         });
       })
@@ -829,16 +906,24 @@
   }
 
   function searchAccountLibraryFallback(movie) {
-    console.log('[AllDebrid] fallback: account ready magnets');
+    console.log('[PIPELINE] searchAccountLibraryFallback — start (path: account readyList → title filter)');
 
     return fetchReadyMagnets().then(function (readyList) {
+      console.log('[DEBUG] readyList length', toArray(readyList).length);
+
       var magnets = debugReadyList(readyList, 'account fallback');
 
       if (!Array.isArray(magnets)) {
         magnets = toArray(magnets);
       }
 
+      console.log('[DEBUG] candidate source length (account, before title filter)', magnets.length);
+      logCandidateList(magnets, 'account ready magnets before filter');
+
       var matched = filterMagnetsForMovie(magnets, movie);
+
+      console.log('[DEBUG] candidates length (account, after title filter)', matched.length);
+      logCandidateList(matched, 'account after title filter');
       var results = [];
       var seen = {};
 
@@ -1040,6 +1125,7 @@
     console.log('[MATCH] movie.original_title', movie.original_title || movie.original_name);
     console.log('[MATCH] movie.year', year);
     console.log('[MATCH] scanning magnets count', list.length);
+    console.log('[PIPELINE] filterMagnetsForMovie — source length:', list.length);
 
     if (!Array.isArray(list)) {
       console.warn('[MATCH] abort: magnets is not an array after toArray');
@@ -1066,6 +1152,7 @@
     });
 
     console.log('[MATCH] matched count', scored.length);
+    console.log('[PIPELINE] filterMagnetsForMovie — output length:', scored.length);
 
     return scored;
   }
@@ -1229,11 +1316,22 @@
 
   function searchCachedTorrents(movie) {
     var info = extractMovieInfo(movie);
+    console.log('[PIPELINE] searchCachedTorrents — start');
     console.log('[AllDebrid] search for', info);
 
     return searchPublicCachedTorrents(movie).then(function (results) {
-      if (results.length) return results;
-      return searchAccountLibraryFallback(movie);
+      console.log('[PIPELINE] searchCachedTorrents — public path returned', results.length, 'results');
+
+      if (results.length) {
+        console.log('[PIPELINE] searchCachedTorrents — SKIPPING account fallback (public path had results)');
+        return results;
+      }
+
+      console.log('[PIPELINE] searchCachedTorrents — entering account fallback (public path empty)');
+      return searchAccountLibraryFallback(movie).then(function (fallbackResults) {
+        console.log('[PIPELINE] searchCachedTorrents — account fallback returned', fallbackResults.length, 'results');
+        return fallbackResults;
+      });
     });
   }
 
