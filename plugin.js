@@ -123,7 +123,7 @@
   function mapTorrentioStreamsToResults(streams) {
     return toArray(streams)
       .filter(function (stream) {
-        return stream && stream.url;
+        return !!stream;
       })
       .map(function (stream) {
         var name = stream.name || 'Unknown';
@@ -134,7 +134,7 @@
           size: '—',
           seeders: '—',
           quality: streamTitle,
-          directUrl: stream.url,
+          directUrl: stream.url || '',
           source: 'torrentio',
           raw: stream
         };
@@ -1760,9 +1760,16 @@
   function handleResultSelect(row, movie, info) {
     console.log('[AllDebrid] selected result', row);
 
-    if (row && row.directUrl) {
-      console.log('[TORRENTIO] play stream.url', row.directUrl);
-      openLampaPlayer(row.directUrl, movie, info, row.title);
+    if (row && row.source === 'torrentio') {
+      var playUrl = row.directUrl || (row.raw && row.raw.url) || '';
+
+      if (!playUrl) {
+        Lampa.Noty.show('Stream URL is missing');
+        return;
+      }
+
+      console.log('[TORRENTIO] play stream.url', playUrl);
+      openLampaPlayer(playUrl, movie, info, row.title);
       return;
     }
 
@@ -1981,9 +1988,21 @@
       Lampa.Loading.stop();
     });
 
+    var torrentioUiShown = false;
+
     function showCachedSearchResults() {
+      if (torrentioUiShown) {
+        console.log('[TORRENTIO] skip searchCachedTorrents — Torrentio UI already shown');
+        return Promise.resolve();
+      }
+
       return searchCachedTorrents(movie, searchId)
         .then(function (results) {
+          if (torrentioUiShown) {
+            console.log('[TORRENTIO] skip cached modal — Torrentio UI already shown');
+            return;
+          }
+
           if (isSearchStale(searchId)) {
             console.log('[STEP] ignoring stale search results searchId', searchId);
             Lampa.Loading.stop();
@@ -1998,6 +2017,10 @@
           showResultsModal(info, resultsList, movie);
         })
         .catch(function (err) {
+          if (torrentioUiShown) {
+            return;
+          }
+
           Lampa.Loading.stop();
 
           console.group('[AllDebrid] SEARCH ERROR');
@@ -2018,16 +2041,24 @@
         }
 
         var torrentioStreams = toArray(streams);
+        var torrentioResults = mapTorrentioStreamsToResults(torrentioStreams);
 
-        if (torrentioStreams.length > 0) {
+        console.log(
+          '[TORRENTIO] mapped results',
+          torrentioResults.length,
+          '/',
+          torrentioStreams.length
+        );
+
+        if (torrentioStreams.length > 0 && torrentioResults.length > 0) {
+          torrentioUiShown = true;
           Lampa.Loading.stop();
-          var torrentioResults = mapTorrentioStreamsToResults(torrentioStreams);
           console.log('[TORRENTIO] UI results', torrentioResults);
           showResultsModal(info, torrentioResults, movie);
           return;
         }
 
-        console.log('[TORRENTIO] no streams, fallback to searchCachedTorrents');
+        console.log('[TORRENTIO] no streams for UI, fallback to searchCachedTorrents');
         return showCachedSearchResults();
       })
       .catch(function (err) {
