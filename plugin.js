@@ -2,8 +2,7 @@
   'use strict';
 
   /**
-   * Movie → public torrent search → instant cache check → results → upload → files → unlock → player
-   * Account ready magnets are fallback only.
+   * MVP: AllDebrid ready magnets → title match → select → files → unlock → player
    */
   var VIDEO_EXT = /\.(mkv|mp4|avi|mov)$/i;
   var INSTANT_BATCH = 50;
@@ -1009,7 +1008,7 @@
 
   function searchAccountLibraryFallback(movie, searchId) {
     logMovieDataSources('searchAccountLibraryFallback — start', movie);
-    console.log('[PIPELINE] searchAccountLibraryFallback — start (path: account readyList → title filter)');
+    console.log('[PIPELINE] searchAccountLibraryFallback — MVP (readyList → title filter → results)');
     console.log('[STEP] snapshot movie id', movie && movie.id, 'title', movie && movie.title);
 
     return fetchReadyMagnets().then(function (readyList) {
@@ -1126,8 +1125,59 @@
     return (' ' + haystack + ' ').indexOf(' ' + word + ' ') >= 0;
   }
 
+  function stemToken(word) {
+    if (!word || word.length < 4) return word;
+    if (word.length > 4 && word.charAt(word.length - 1) === 's') {
+      return word.slice(0, -1);
+    }
+    return word;
+  }
+
+  function wordMatchesInFilename(normFilename, word) {
+    if (!word || !normFilename) return false;
+
+    if (containsWord(normFilename, word)) return true;
+
+    var stem = stemToken(word);
+    var tokens = normFilename.split(' ');
+
+    for (var i = 0; i < tokens.length; i++) {
+      var token = tokens[i];
+      if (!token) continue;
+      if (token === word || token === stem) return true;
+      if (stem.length >= 4 && stemToken(token) === stem) return true;
+    }
+
+    var compact = collapseSpaces(normFilename);
+    if (word.length >= 4 && compact.indexOf(word) >= 0) return true;
+    if (stem.length >= 4 && compact.indexOf(stem) >= 0) return true;
+
+    return false;
+  }
+
+  function compactContainsWordSequence(compactFilename, words) {
+    if (!compactFilename || !words || !words.length) return false;
+
+    var pos = 0;
+
+    for (var i = 0; i < words.length; i++) {
+      var stem = stemToken(words[i]);
+      if (!stem || stem.length < 3) continue;
+
+      var idx = compactFilename.indexOf(stem, pos);
+      if (idx < 0) return false;
+      pos = idx + stem.length;
+    }
+
+    return true;
+  }
+
   function isMatchDiagnosticFilename(str) {
-    return /widows?|mummy|undertone/i.test(String(str || ''));
+    return /widows?|mummy|undertone|dead\s*body|dhurandhar/i.test(String(str || ''));
+  }
+
+  function isMatchDiagnosticTitle(str) {
+    return isMatchDiagnosticFilename(str);
   }
 
   function logMatchDiagnostic(tag, payload) {
@@ -1136,27 +1186,26 @@
 
   function logPerCandidateMatch(movie, filename, score) {
     var movieTitle = movie.title || movie.name || '';
+    var passes = score >= MIN_MATCH_SCORE;
+    var diag =
+      isMatchDiagnosticFilename(filename) ||
+      isMatchDiagnosticTitle(movieTitle) ||
+      isMatchDiagnosticTitle(movie.original_title || movie.original_name);
+
+    if (!diag && passes) return;
+
     var payload = {
       originalFilename: filename,
       normalizedFilename: normalizeTitle(filename),
       movieTitle: movieTitle,
       normalizedMovieTitle: normalizeTitle(movieTitle),
+      titleVariants: movieTitleVariants(movie),
       score: score,
       threshold: MIN_MATCH_SCORE,
-      matched: score >= MIN_MATCH_SCORE
+      matched: passes
     };
 
     console.log('[CANDIDATE MATCH]', payload);
-
-    if (/widows\.bay\.s01e01/i.test(filename)) {
-      console.log('[CANDIDATE MATCH] Widows.Bay.S01E01', payload);
-    }
-    if (/widows\.bay\.s01e02/i.test(filename)) {
-      console.log('[CANDIDATE MATCH] Widows.Bay.S01E02', payload);
-    }
-    if (/widows\.bay\.s01e03/i.test(filename)) {
-      console.log('[CANDIDATE MATCH] Widows.Bay.S01E03', payload);
-    }
   }
 
   function getSignificantWords(normTitle) {
@@ -1230,13 +1279,18 @@
       score = 1;
     }
 
+    var words = getSignificantWords(normTitle);
+    var matchedWords = [];
     var compactTitle = getCompactTitle(normTitle);
-    if (compactTitle.length >= 4 && collapseSpaces(normFilename).indexOf(compactTitle) >= 0) {
+    var compactFilename = collapseSpaces(normFilename);
+
+    if (compactTitle.length >= 4 && compactFilename.indexOf(compactTitle) >= 0) {
       score = Math.max(score, 0.95);
     }
 
-    var words = getSignificantWords(normTitle);
-    var matchedWords = [];
+    if (words.length >= 2 && compactContainsWordSequence(compactFilename, words)) {
+      score = Math.max(score, 0.92);
+    }
 
     if (!words.length) {
       if (diag) {
@@ -1245,6 +1299,7 @@
           normalizedFilename: normFilename,
           normalizedTitle: normTitle,
           compactTitle: compactTitle,
+          compactFilename: compactFilename,
           significantWords: words,
           matchedWords: matchedWords,
           finalScore: score,
@@ -1256,7 +1311,7 @@
 
     var matched = 0;
     for (var i = 0; i < words.length; i++) {
-      if (containsWord(normFilename, words[i])) {
+      if (wordMatchesInFilename(normFilename, words[i])) {
         matched++;
         matchedWords.push(words[i]);
       }
@@ -1266,7 +1321,11 @@
     var minRequired = words.length >= 2 ? 2 : 1;
 
     if (matched < minRequired) {
-      wordScore *= 0.35;
+      if (words.length >= 3 && matched >= words.length - 1) {
+        wordScore = matched / words.length;
+      } else {
+        wordScore *= 0.35;
+      }
     }
 
     score = Math.max(score, wordScore);
@@ -1278,16 +1337,17 @@
     var finalScore = Math.min(1, score);
 
     if (diag) {
-      logMatchDiagnostic('scoreTitleAgainstFilename', {
-        originalFilename: originalFilename,
-        normalizedFilename: normFilename,
-        normalizedTitle: normTitle,
-        compactTitle: compactTitle,
-        significantWords: words,
-        matchedWords: matchedWords,
-        finalScore: finalScore,
-        threshold: MIN_MATCH_SCORE
-      });
+        logMatchDiagnostic('scoreTitleAgainstFilename', {
+          originalFilename: originalFilename,
+          normalizedFilename: normFilename,
+          normalizedTitle: normTitle,
+          compactTitle: compactTitle,
+          compactFilename: compactFilename,
+          significantWords: words,
+          matchedWords: matchedWords,
+          finalScore: finalScore,
+          threshold: MIN_MATCH_SCORE
+        });
     }
 
     return finalScore;
@@ -1365,10 +1425,14 @@
 
     for (var i = 0; i < list.length; i++) {
       var m = list[i];
-      var filename = m && (m.filename || m.name) ? m.filename || m.name : '';
+      var filename =
+        m && (m.filename || m.name || m.title || m.Title)
+          ? m.filename || m.name || m.title || m.Title
+          : '';
       var score = scoreMovieAgainstFilename(movie, filename);
+      var matched = score >= MIN_MATCH_SCORE;
+
       logPerCandidateMatch(movie, filename, score);
-      var matched = true;
 
       console.log('[MATCH CHECK]', {
         movieTitle: movieTitle,
@@ -1392,8 +1456,12 @@
 
     console.log('[MATCH] matched count', scored.length);
     console.log('[PIPELINE] filterMagnetsForMovie — output length:', scored.length);
-    console.log('[BYPASS TEST] input count', list.length);
-    console.log('[BYPASS TEST] output count', scored.length);
+    console.log('[ACCOUNT MATCH] summary', {
+      input: list.length,
+      matched: scored.length,
+      threshold: MIN_MATCH_SCORE,
+      movieTitle: movieTitle
+    });
 
     return scored;
   }
@@ -1556,35 +1624,20 @@
   }
 
   function searchCachedTorrents(movie, searchId) {
-    logMovieDataSources('searchCachedTorrents — start', movie);
+    logMovieDataSources('searchCachedTorrents — start (account ready magnets only)', movie);
 
     var info = extractMovieInfo(movie);
-    console.log('[PIPELINE] searchCachedTorrents — start searchId', searchId);
+    console.log('[PIPELINE] searchCachedTorrents — MVP account path searchId', searchId);
     console.log('[AllDebrid] search for', info);
 
-    return searchPublicCachedTorrents(movie, searchId).then(function (results) {
+    return searchAccountLibraryFallback(movie, searchId).then(function (results) {
       if (isSearchStale(searchId)) {
-        console.log('[PIPELINE] searchCachedTorrents — stale after public path');
+        console.log('[PIPELINE] searchCachedTorrents — stale search');
         return [];
       }
 
-      console.log('[PIPELINE] searchCachedTorrents — public path returned', results.length, 'results');
-
-      if (results.length) {
-        console.log('[PIPELINE] searchCachedTorrents — SKIPPING account fallback (public path had results)');
-        return results;
-      }
-
-      console.log('[PIPELINE] searchCachedTorrents — entering account fallback (public path empty)');
-      return searchAccountLibraryFallback(movie, searchId).then(function (fallbackResults) {
-        if (isSearchStale(searchId)) {
-          console.log('[PIPELINE] searchCachedTorrents — stale after account fallback');
-          return [];
-        }
-
-        console.log('[PIPELINE] searchCachedTorrents — account fallback returned', fallbackResults.length, 'results');
-        return fallbackResults;
-      });
+      console.log('[PIPELINE] searchCachedTorrents — account results', results.length);
+      return results;
     });
   }
 
@@ -1663,7 +1716,7 @@
     console.log('[DEBUG] Select items length', selectItems.length);
 
     Lampa.Select.show({
-      title: 'AllDebrid — cached results',
+      title: 'AllDebrid — ' + (resultsList.length === 1 ? '1 match' : resultsList.length + ' matches'),
       items: selectItems,
       onBack: function () {
         Lampa.Controller.toggle('full_start');
