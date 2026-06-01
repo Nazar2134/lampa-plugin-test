@@ -378,58 +378,98 @@
       });
   }
 
-  function matchesMovie(name, info) {
-    var text = String(name || '').toLowerCase();
-    var filename = text;
-
-    console.log('[AllDebrid] match check filename:', filename);
-
-    if (!filename) {
-      console.log('[AllDebrid] match fail: empty filename');
-      return false;
-    }
-
-    var year = info.release_date ? String(info.release_date).slice(0, 4) : '';
-    var title = info.title ? String(info.title).toLowerCase() : '';
-    var original = info.original_title ? String(info.original_title).toLowerCase() : '';
-
-    console.log('[AllDebrid] match against title:', title);
-    console.log('[AllDebrid] match against original_title:', original);
-    console.log('[AllDebrid] match against year:', year);
-
-    var titleMatch = false;
-
-    if (title && filename.indexOf(title) >= 0) {
-      titleMatch = true;
-      console.log('[AllDebrid] match hit: title');
-    }
-
-    if (original && filename.indexOf(original) >= 0) {
-      titleMatch = true;
-      console.log('[AllDebrid] match hit: original_title');
-    }
-
-    if (!titleMatch) {
-      console.log('[AllDebrid] match fail: no title match');
-      return false;
-    }
-
-    if (year && filename.indexOf(year) < 0) {
-      console.log('[AllDebrid] match fail: year not in filename');
-      return false;
-    }
-
-    console.log('[AllDebrid] match success');
-    return true;
+  function normalizeTitle(str) {
+    return String(str || '')
+      .toLowerCase()
+      .replace(/[''`]/g, '')
+      .replace(/\./g, ' ')
+      .replace(/(\w)\s+s\b/g, '$1s')
+      .replace(/[^a-z0-9\s\u0400-\u04ff]/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
-  function filterMagnetsForMovie(magnets, info) {
-    var list = toArray(magnets);
+  function containsBidirectional(a, b) {
+    if (!a || !b) return false;
+    return a.indexOf(b) >= 0 || b.indexOf(a) >= 0;
+  }
 
-    console.log('[AllDebrid] filter step 1: input count', list.length);
+  function collectTitleVariants(raw) {
+    var variants = [];
+    var seen = {};
+
+    function add(part) {
+      var norm = normalizeTitle(part);
+      if (!norm || norm.length < 4 || seen[norm]) return;
+      seen[norm] = true;
+      variants.push(norm);
+    }
+
+    if (!raw) return variants;
+
+    String(raw)
+      .split(/[:;|]/)
+      .forEach(function (segment) {
+        add(segment);
+      });
+
+    return variants;
+  }
+
+  function movieTitleVariants(movie) {
+    var variants = [];
+    var seen = {};
+
+    function merge(list) {
+      list.forEach(function (v) {
+        if (!seen[v]) {
+          seen[v] = true;
+          variants.push(v);
+        }
+      });
+    }
+
+    merge(collectTitleVariants(movie.title || movie.name));
+    merge(collectTitleVariants(movie.original_title || movie.original_name));
+
+    return variants;
+  }
+
+  function titleMatchesFilename(titleVariants, normFilename) {
+    for (var i = 0; i < titleVariants.length; i++) {
+      if (containsBidirectional(normFilename, titleVariants[i])) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function matchesMovie(magnet, movie) {
+    var filename = magnet && (magnet.filename || magnet.name) ? magnet.filename || magnet.name : '';
+    var normFilename = normalizeTitle(filename);
+
+    if (!normFilename) {
+      return false;
+    }
+
+    return titleMatchesFilename(movieTitleVariants(movie), normFilename);
+  }
+
+  function filterMagnetsForMovie(magnets, movie) {
+    var list = toArray(magnets);
+    var year = movie.release_date
+      ? String(movie.release_date).slice(0, 4)
+      : movie.first_air_date
+        ? String(movie.first_air_date).slice(0, 4)
+        : '';
+
+    console.log('[MATCH] movie.title', movie.title || movie.name);
+    console.log('[MATCH] movie.original_title', movie.original_title || movie.original_name);
+    console.log('[MATCH] movie.year', year);
+    console.log('[MATCH] scanning magnets count', list.length);
 
     if (!Array.isArray(list)) {
-      console.warn('[AllDebrid] filter abort: magnets is not an array after toArray');
+      console.warn('[MATCH] abort: magnets is not an array after toArray');
       return [];
     }
 
@@ -437,19 +477,19 @@
 
     for (var i = 0; i < list.length; i++) {
       var m = list[i];
-      var label = m && (m.filename || m.name) ? m.filename || m.name : '(no name)';
+      var filename = m && (m.filename || m.name) ? m.filename || m.name : '';
 
-      console.log('[AllDebrid] filter step 2: index', i, 'name', label);
+      console.log('[MATCH] filename', filename);
 
-      if (matchesMovie(label, info)) {
-        console.log('[AllDebrid] filter step 3: KEEP', label);
+      if (matchesMovie(m, movie)) {
+        console.log('[MATCH FOUND]', filename);
         matched.push(m);
       } else {
-        console.log('[AllDebrid] filter step 3: SKIP', label);
+        console.log('[MATCH SKIP]', filename);
       }
     }
 
-    console.log('[AllDebrid] filter step 4: matched count', matched.length);
+    console.log('[MATCH] matched count', matched.length);
 
     return matched;
   }
@@ -639,7 +679,7 @@
         magnets = toArray(magnets);
       }
 
-      var matched = filterMagnetsForMovie(magnets, info);
+      var matched = filterMagnetsForMovie(magnets, movie);
 
       for (var i = 0; i < matched.length; i++) {
         var m = matched[i];
@@ -698,8 +738,7 @@
     console.log('[DEBUG] showResultsModal resultsList length', resultsList.length);
 
     if (!Array.isArray(resultsList) || !resultsList.length) {
-      Lampa.Noty.show('No cached results found');
-      showMovieInfoModal(info);
+      Lampa.Noty.show('No cached torrents found');
       return;
     }
 
