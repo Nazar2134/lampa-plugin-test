@@ -941,6 +941,7 @@
             '';
           var score = scoreMovieAgainstFilename(movie, label);
 
+          logPerCandidateMatch(movie, label, score);
           logMatchScore(movie, label, score);
 
           if (score >= MIN_MATCH_SCORE) {
@@ -1131,6 +1132,31 @@
 
   function logMatchDiagnostic(tag, payload) {
     console.log('[MATCH DIAG] ' + tag, payload);
+  }
+
+  function logPerCandidateMatch(movie, filename, score) {
+    var movieTitle = movie.title || movie.name || '';
+    var payload = {
+      originalFilename: filename,
+      normalizedFilename: normalizeTitle(filename),
+      movieTitle: movieTitle,
+      normalizedMovieTitle: normalizeTitle(movieTitle),
+      score: score,
+      threshold: MIN_MATCH_SCORE,
+      matched: score >= MIN_MATCH_SCORE
+    };
+
+    console.log('[CANDIDATE MATCH]', payload);
+
+    if (/widows\.bay\.s01e01/i.test(filename)) {
+      console.log('[CANDIDATE MATCH] Widows.Bay.S01E01', payload);
+    }
+    if (/widows\.bay\.s01e02/i.test(filename)) {
+      console.log('[CANDIDATE MATCH] Widows.Bay.S01E02', payload);
+    }
+    if (/widows\.bay\.s01e03/i.test(filename)) {
+      console.log('[CANDIDATE MATCH] Widows.Bay.S01E03', payload);
+    }
   }
 
   function getSignificantWords(normTitle) {
@@ -1326,12 +1352,22 @@
       return [];
     }
 
+    console.log('[CANDIDATE MATCH] filterMagnetsForMovie session', {
+      movieTitle: movieTitle,
+      normalizedMovieTitle: normalizeTitle(movieTitle),
+      normalizedOriginalTitle: normalizeTitle(originalTitle),
+      titleVariants: movieTitleVariants(movie),
+      threshold: MIN_MATCH_SCORE,
+      inputCount: list.length
+    });
+
     var scored = [];
 
     for (var i = 0; i < list.length; i++) {
       var m = list[i];
       var filename = m && (m.filename || m.name) ? m.filename || m.name : '';
       var score = scoreMovieAgainstFilename(movie, filename);
+      logPerCandidateMatch(movie, filename, score);
       var matched = true;
 
       console.log('[MATCH CHECK]', {
