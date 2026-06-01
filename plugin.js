@@ -113,8 +113,8 @@
     return n.toFixed(i > 0 ? 1 : 0) + ' ' + units[i];
   }
 
-  function encodeFormBody(params, apiKey) {
-    var parts = ['apikey=' + encodeURIComponent(apiKey)];
+  function encodeFormBody(params) {
+    var parts = [];
 
     Object.keys(params || {}).forEach(function (key) {
       var val = params[key];
@@ -132,6 +132,32 @@
     return parts.join('&');
   }
 
+  function buildUrlWithParams(url, params) {
+    var parts = [];
+
+    Object.keys(params || {}).forEach(function (key) {
+      var val = params[key];
+      if (val == null) return;
+
+      if (Array.isArray(val)) {
+        val.forEach(function (item) {
+          parts.push(encodeURIComponent(key) + '=' + encodeURIComponent(item));
+        });
+      } else {
+        parts.push(encodeURIComponent(key) + '=' + encodeURIComponent(val));
+      }
+    });
+
+    if (!parts.length) return url;
+    return url + (url.indexOf('?') >= 0 ? '&' : '?') + parts.join('&');
+  }
+
+  /**
+   * AllDebrid API v4.1:
+   * POST https://api.alldebrid.com/v4.1/magnet/status
+   * Optional body: status = active | ready | expired | error
+   * Auth: Authorization: Bearer <apikey> (official docs)
+   */
   function adRequest(path, params, method, base) {
     var apiKey = getApiKey();
 
@@ -144,72 +170,77 @@
     base = base || AD_BASE;
 
     return new Promise(function (resolve, reject) {
-      var network = new Lampa.Reguest();
-      var url = base + path;
+      var fullUrl = base + path;
+      var requestUrl = method === 'GET' ? buildUrlWithParams(fullUrl, params) : fullUrl;
 
-      if (method === 'GET') {
-        var parts = ['apikey=' + encodeURIComponent(apiKey)];
+      console.log('[AllDebrid] REQUEST', method, requestUrl, params);
 
-        Object.keys(params).forEach(function (key) {
-          var val = params[key];
-          if (val == null) return;
+      var xhr = new XMLHttpRequest();
+      xhr.open(method, requestUrl, true);
+      xhr.timeout = 30000;
+      xhr.setRequestHeader('Authorization', 'Bearer ' + apiKey);
 
-          if (Array.isArray(val)) {
-            val.forEach(function (item) {
-              parts.push(encodeURIComponent(key) + '=' + encodeURIComponent(item));
-            });
-          } else {
-            parts.push(encodeURIComponent(key) + '=' + encodeURIComponent(val));
-          }
-        });
+      function finishWithResponse() {
+        var status = xhr.status;
+        var responseText = xhr.responseText || '';
 
-        url += (url.indexOf('?') >= 0 ? '&' : '?') + parts.join('&');
+        console.log('[AllDebrid] HTTP STATUS', status);
+        console.log('[AllDebrid] RAW RESPONSE', responseText);
 
-        console.log('[AllDebrid] REQUEST', method, url, params);
+        var json = null;
 
-        network.silent(
-          url,
-          function (json) {
-            console.log('[AllDebrid] RESPONSE', json);
+        try {
+          json = responseText ? JSON.parse(responseText) : null;
+        } catch (parseErr) {
+          console.error('[AllDebrid] JSON PARSE ERROR', parseErr);
+          reject(
+            new Error('Invalid JSON (HTTP ' + status + '): ' + responseText.slice(0, 200))
+          );
+          return;
+        }
 
-            if (json && json.status === 'success') resolve(json.data);
-            else {
-              console.error('[AllDebrid] API ERROR', json);
-              reject(json || new Error('AllDebrid request failed'));
-            }
-          },
-          function (a, c) {
-            console.error('[AllDebrid] REQUEST FAILED', a, c);
-            reject(new Error(network.errorDecode(a, c) || 'Network error'));
-          }
-        );
+        console.log('[AllDebrid] RESPONSE', json);
+
+        if (status >= 200 && status < 300 && json && json.status === 'success') {
+          resolve(json.data);
+          return;
+        }
+
+        if (json && json.error) {
+          console.error('[AllDebrid] API ERROR', json);
+          reject(
+            new Error(
+              (json.error.message || json.error.code || 'AllDebrid API error') +
+                ' (HTTP ' +
+                status +
+                ')'
+            )
+          );
+          return;
+        }
+
+        reject(new Error('HTTP ' + status + ': ' + (responseText || 'empty response')));
+      }
+
+      xhr.onload = finishWithResponse;
+
+      xhr.onerror = function () {
+        console.error('[AllDebrid] REQUEST FAILED', 'onerror', xhr.status, xhr.responseText);
+        console.log('[AllDebrid] HTTP STATUS', xhr.status);
+        console.log('[AllDebrid] RAW RESPONSE', xhr.responseText || '');
+        reject(new Error('Network error (HTTP ' + xhr.status + ')'));
+      };
+
+      xhr.ontimeout = function () {
+        console.error('[AllDebrid] REQUEST FAILED', 'timeout');
+        reject(new Error('Request timeout'));
+      };
+
+      if (method === 'POST') {
+        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+        xhr.send(encodeFormBody(params));
       } else {
-        var postBody = encodeFormBody(params, apiKey);
-
-        console.log('[AllDebrid] REQUEST', method, url, params);
-
-        network.native(
-          url,
-          function (json) {
-            console.log('[AllDebrid] RESPONSE', json);
-
-            if (json && json.status === 'success') resolve(json.data);
-            else {
-              console.error('[AllDebrid] API ERROR', json);
-              reject(json || new Error('AllDebrid request failed'));
-            }
-          },
-          function (a, c) {
-            console.error('[AllDebrid] REQUEST FAILED', a, c);
-            reject(new Error(network.errorDecode(a, c) || 'Network error'));
-          },
-          false,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: postBody
-          }
-        );
+        xhr.send();
       }
     });
   }
@@ -273,9 +304,14 @@
   }
 
   function fetchReadyMagnets() {
-    return adRequest('/magnet/status', { status: 'ready' }, 'POST', AD_BASE_V41).then(function (data) {
-      return (data && data.magnets) || [];
-    });
+    return adRequest('/magnet/status', { status: 'ready' }, 'POST', AD_BASE_V41)
+      .then(function (data) {
+        return (data && data.magnets) || [];
+      })
+      .catch(function (err) {
+        console.error('[AllDebrid] fetchReadyMagnets failed (continuing search)', err);
+        return [];
+      });
   }
 
   function matchesMovie(name, info) {
@@ -308,8 +344,7 @@
       results.push(item);
     }
 
-    return fetchReadyMagnets()
-      .then(function (readyList) {
+    return fetchReadyMagnets().then(function (readyList) {
         console.log('[AllDebrid] ready magnets', readyList);
 
         readyList.forEach(function (m) {
