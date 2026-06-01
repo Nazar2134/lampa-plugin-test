@@ -151,6 +151,30 @@
   }
 
   /**
+   * DISABLED — JS cannot resolve torrentio/debrid URLs (CORS).
+   * Playback uses playTorrentioStream() → openLampaPlayer() with stream.url only.
+   */
+  function resolveTorrentioStreamUrl() {
+    console.warn('[TORRENTIO] resolveTorrentioStreamUrl is disabled (CORS)');
+    return Promise.reject(new Error('resolveTorrentioStreamUrl disabled'));
+  }
+
+  function xhrResolveFinalUrl() {
+    console.warn('[TORRENTIO] xhrResolveFinalUrl is disabled (CORS)');
+    return Promise.reject(new Error('xhrResolveFinalUrl disabled'));
+  }
+
+  function fetchResolveFinalUrl() {
+    console.warn('[TORRENTIO] fetchResolveFinalUrl is disabled (CORS)');
+    return Promise.reject(new Error('fetchResolveFinalUrl disabled'));
+  }
+
+  function nativeResolveFinalUrl() {
+    console.warn('[TORRENTIO] nativeResolveFinalUrl is disabled (CORS)');
+    return Promise.reject(new Error('nativeResolveFinalUrl disabled'));
+  }
+
+  /**
    * Movie/card data sources in this plugin:
    * - getActiveMovie()           → Lampa.Activity.active().movie || .card
    * - snapshotMovie()            → frozen copy at AllDebrid click (used for search)
@@ -1724,31 +1748,43 @@
     row = row || {};
 
     if (row.directUrl) {
-      return String(row.directUrl).trim();
+      return { url: String(row.directUrl).trim(), source: 'row.directUrl' };
+    }
+
+    if (stream.url) {
+      return { url: String(stream.url).trim(), source: 'stream.url' };
     }
 
     if (stream.externalUrl) {
-      return String(stream.externalUrl).trim();
+      return { url: String(stream.externalUrl).trim(), source: 'stream.externalUrl' };
     }
 
-    return String(stream.url || '').trim();
+    return { url: '', source: '' };
   }
 
   /**
-   * Torrentio playback: stream.url / directUrl → Lampa.Player.play (no preflight).
-   * Redirect resolve → debrid.it is handled inside the player, not via XHR/fetch.
+   * Torrentio playback: direct URL → Lampa.Player.play.
+   * No fetch / XMLHttpRequest / HEAD / resolve — player follows redirects natively.
    */
   function playTorrentioStream(stream, movie, info, row) {
     stream = stream || {};
     row = row || {};
-    var playUrl = getTorrentioPlayUrl(stream, row);
+
+    var picked = getTorrentioPlayUrl(stream, row);
+    var playUrl = picked.url;
 
     if (!playUrl) {
       Lampa.Noty.show('Stream URL is missing');
       return;
     }
 
-    console.log('[TORRENTIO] direct play url (no preflight)', playUrl);
+    console.log('[TORRENTIO DIRECT PLAY]', {
+      url: playUrl,
+      pickedFrom: picked.source,
+      rowDirectUrl: row.directUrl || '',
+      streamUrl: stream.url || '',
+      streamExternalUrl: stream.externalUrl || ''
+    });
 
     var extra = {
       torrentio: true,
@@ -1848,6 +1884,7 @@
     console.log('[AllDebrid] selected result', row);
 
     if (row && row.source === 'torrentio') {
+      console.log('[TORRENTIO DIRECT PLAY] handleResultSelect — no HTTP, direct Player');
       playTorrentioStream(row.raw || {}, movie, info, row);
       return;
     }
@@ -2403,15 +2440,19 @@
     }, POLL_MS);
   }
 
-  function updateApiKeyDisplay(body) {
-    if (!body || !body.length) return;
-
-    var key = getApiKey();
-    var field = body.find('[data-name="alldebrid_api_key"] .settings-param__value');
-
-    if (field.length) {
-      field.text(key ? maskApiKey(key) : 'Not set');
+  function refreshApiKeySettingsDisplay(item) {
+    if (!item || !item.length) {
+      item = $('.settings [data-name="' + STORAGE_KEY + '"]');
     }
+
+    if (!item || !item.length) return;
+
+    var valueEl = item.find('.settings-param__value');
+    if (!valueEl.length) return;
+
+    valueEl.text(
+      getApiKey() ? '********' : translate('alldebrid_api_key_not_set', 'Not set')
+    );
   }
 
   function addLang() {
@@ -2437,6 +2478,10 @@
       alldebrid_api_key_input_title: {
         en: 'AllDebrid API Key',
         ru: 'API ключ AllDebrid'
+      },
+      alldebrid_api_key_not_set: {
+        en: 'Not set',
+        ru: 'Не задан'
       }
     });
   }
@@ -2447,114 +2492,77 @@
       : fallback;
   }
 
-  function saveApiKey(value, body) {
-    Lampa.Storage.set('alldebrid_api_key', value || '');
-    updateApiKeyDisplay(body);
-    Lampa.Noty.show(translate('alldebrid_api_key_saved', 'AllDebrid API key saved'));
-  }
-
-  function openApiKeyInput(elem, body) {
-    var current = getApiKey();
-
-    if (Lampa.Input && Lampa.Input.edit) {
-      Lampa.Input.edit(
-        {
-          elem: elem,
-          name: STORAGE_KEY,
-          nomic: true,
-          title: translate('alldebrid_api_key_input_title', 'AllDebrid API Key'),
-          value: current
-        },
-        function (value) {
-          saveApiKey(value, body);
-        }
-      );
-      return;
-    }
-
-    if (Lampa.Params && Lampa.Params.bind) {
-      Lampa.Params.bind(elem, body);
-      elem.trigger('hover:enter');
-      return;
-    }
-
-    Lampa.Noty.show('Input dialog is not available in this Lampa build');
-  }
-
-  function bindApiKeyField(body) {
-    var field = body.find('[data-name="alldebrid_api_key"]');
-    if (!field.length) return;
-
-    updateApiKeyDisplay(body);
-
-    field.off('hover:enter.alldebrid').on('hover:enter.alldebrid', function () {
-      openApiKeyInput($(this), body);
-    });
-  }
-
   function installSettings() {
     if (!Lampa.Params || !Lampa.Params.select) return;
+    if (!Lampa.SettingsApi || !Lampa.SettingsApi.addComponent) return;
 
-    Lampa.Params.select('alldebrid_api_key', '', '');
+    var iconSvg =
+      '<svg height="29" viewBox="0 0 24 24" fill="currentColor">' +
+      '<path d="M12 2L2 7l10 5 10-5-10-5zm0 7L2 14l10 5 10-5-10-5zm0 7l-10 5 10 5 10-5-10-5z"/>' +
+      '</svg>';
 
-    Lampa.Template.add(
-      'settings_alldebrid',
-      '<div class="settings-param selector" data-name="alldebrid_api_key">' +
-        '<div class="settings-param__name">#{alldebrid_api_key_title}</div>' +
-        '<div class="settings-param__value"></div>' +
-        '<div class="settings-param__descr">#{alldebrid_api_key_descr}</div>' +
-      '</div>'
-    );
+    Lampa.SettingsApi.addComponent({
+      component: 'alldebrid',
+      icon: iconSvg,
+      name: translate('alldebrid_settings_title', 'AllDebrid'),
+      after: 'more'
+    });
 
-    function addSettingsMenuItem() {
-      if (!Lampa.Settings || !Lampa.Settings.main) return;
+    Lampa.SettingsApi.addParam({
+      component: 'alldebrid',
+      param: {
+        name: STORAGE_KEY,
+        type: 'input',
+        values: '',
+        default: ''
+      },
+      field: {
+        name: translate('alldebrid_api_key_title', 'API Key'),
+        description: translate(
+          'alldebrid_api_key_descr',
+          'Your personal AllDebrid API key (stored only on this device)'
+        )
+      },
+      onRender: function (item) {
+        refreshApiKeySettingsDisplay(item);
+      },
+      onChange: function () {
+        refreshApiKeySettingsDisplay();
+        Lampa.Noty.show(translate('alldebrid_api_key_saved', 'AllDebrid API key saved'));
+      }
+    });
 
-      var main = Lampa.Settings.main().render();
-      if (main.find('[data-component="alldebrid"]').length) return;
-
-      var label = Lampa.Lang.translate
-        ? Lampa.Lang.translate('alldebrid_settings_title')
-        : 'AllDebrid';
-
-      var item = $(
-        '<div class="settings-folder selector" data-component="alldebrid">' +
-          '<div class="settings-folder__icon">' +
-            '<svg height="29" viewBox="0 0 24 24" fill="currentColor">' +
-              '<path d="M12 2L2 7l10 5 10-5-10-5zm0 7L2 14l10 5 10-5-10-5zm0 7l-10 5 10 5 10-5-10-5z"/>' +
-            '</svg>' +
-          '</div>' +
-          '<div class="settings-folder__name">' +
-          label +
-          '</div>' +
-        '</div>'
-      );
-
-      var anchor = main.find('[data-component="more"]');
-      if (anchor.length) anchor.after(item);
-      else main.append(item);
-
-      Lampa.Settings.main().update();
-    }
-
-    if (window.appready) addSettingsMenuItem();
-    else {
-      Lampa.Listener.follow('app', function (e) {
-        if (e.type === 'ready') addSettingsMenuItem();
-      });
+    function scheduleMaskDisplay() {
+      setTimeout(function () {
+        refreshApiKeySettingsDisplay();
+      }, 0);
     }
 
     Lampa.Settings.listener.follow('open', function (e) {
       if (e.name !== 'alldebrid') return;
-
-      bindApiKeyField(e.body);
+      scheduleMaskDisplay();
     });
+
+    if (Lampa.Params.listener && Lampa.Params.listener.follow) {
+      Lampa.Params.listener.follow('update_scroll', scheduleMaskDisplay);
+    }
 
     Lampa.Storage.listener.follow('change', function (e) {
       if (e.name !== STORAGE_KEY) return;
-
-      var body = e.body || $('.settings .scroll__body').first();
-      if (body && body.length) updateApiKeyDisplay(body);
+      refreshApiKeySettingsDisplay();
     });
+
+    function refreshSettingsMainMenu() {
+      if (!Lampa.Settings || !Lampa.Settings.main) return;
+      Lampa.Settings.main().update();
+    }
+
+    if (window.appready) refreshSettingsMainMenu();
+    else {
+      Lampa.Listener.follow('app', function (e) {
+        if (e.type === 'ready') refreshSettingsMainMenu();
+      });
+    }
   }
 
   function init() {
