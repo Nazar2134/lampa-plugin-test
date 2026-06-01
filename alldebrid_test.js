@@ -513,7 +513,66 @@
       alldebrid_api_key_descr: {
         en: 'Your personal AllDebrid API key (stored only on this device)',
         ru: 'Ваш личный API ключ AllDebrid (хранится только на устройстве)'
+      },
+      alldebrid_api_key_saved: {
+        en: 'AllDebrid API key saved',
+        ru: 'API ключ AllDebrid сохранён'
+      },
+      alldebrid_api_key_input_title: {
+        en: 'AllDebrid API Key',
+        ru: 'API ключ AllDebrid'
       }
+    });
+  }
+
+  function translate(key, fallback) {
+    return Lampa.Lang && Lampa.Lang.translate
+      ? Lampa.Lang.translate(key)
+      : fallback;
+  }
+
+  function saveApiKey(value, body) {
+    Lampa.Storage.set('alldebrid_api_key', value || '');
+    updateApiKeyDisplay(body);
+    Lampa.Noty.show(translate('alldebrid_api_key_saved', 'AllDebrid API key saved'));
+  }
+
+  function openApiKeyInput(elem, body) {
+    var current = getApiKey();
+
+    if (Lampa.Input && Lampa.Input.edit) {
+      Lampa.Input.edit(
+        {
+          elem: elem,
+          name: STORAGE_KEY,
+          nomic: true,
+          title: translate('alldebrid_api_key_input_title', 'AllDebrid API Key'),
+          value: current
+        },
+        function (value) {
+          saveApiKey(value, body);
+        }
+      );
+      return;
+    }
+
+    if (Lampa.Params && Lampa.Params.bind) {
+      Lampa.Params.bind(elem, body);
+      elem.trigger('hover:enter');
+      return;
+    }
+
+    Lampa.Noty.show('Input dialog is not available in this Lampa build');
+  }
+
+  function bindApiKeyField(body) {
+    var field = body.find('[data-name="alldebrid_api_key"]');
+    if (!field.length) return;
+
+    updateApiKeyDisplay(body);
+
+    field.off('hover:enter.alldebrid').on('hover:enter.alldebrid', function () {
+      openApiKeyInput($(this), body);
     });
   }
 
@@ -524,7 +583,7 @@
 
     Lampa.Template.add(
       'settings_alldebrid',
-      '<div class="settings-param selector" data-name="alldebrid_api_key" data-type="input">' +
+      '<div class="settings-param selector" data-name="alldebrid_api_key">' +
         '<div class="settings-param__name">#{alldebrid_api_key_title}</div>' +
         '<div class="settings-param__value"></div>' +
         '<div class="settings-param__descr">#{alldebrid_api_key_descr}</div>' +
@@ -571,17 +630,14 @@
     Lampa.Settings.listener.follow('open', function (e) {
       if (e.name !== 'alldebrid') return;
 
-      updateApiKeyDisplay(e.body);
+      bindApiKeyField(e.body);
     });
 
     Lampa.Storage.listener.follow('change', function (e) {
       if (e.name !== STORAGE_KEY) return;
 
-      var body = $('.settings [data-component="alldebrid"]').length
-        ? $('.settings')
-        : null;
-
-      if (body) updateApiKeyDisplay(body);
+      var body = e.body || $('.settings .scroll__body').first();
+      if (body && body.length) updateApiKeyDisplay(body);
     });
   }
 
