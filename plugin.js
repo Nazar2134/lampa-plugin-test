@@ -23,6 +23,10 @@
   var lastMountKey = null;
   var buttonSyncTimers = [];
   var activeSearchId = 0;
+  var searchInProgress = false;
+  var activeSearchMovieId = null;
+  var lastSearchClickAt = 0;
+  var SEARCH_CLICK_DEBOUNCE_MS = 1000;
 
   function getApiKey() {
     return Lampa.Storage.get('alldebrid_api_key', '');
@@ -110,6 +114,11 @@
           }
 
           console.log('[TORRENTIO RESPONSE] streams count', streams.length);
+
+          if (streams.length) {
+            console.log('[TORRENTIO STREAM SAMPLE]', streams[0]);
+          }
+
           resolve(streams);
         },
         function (err) {
@@ -138,184 +147,6 @@
           source: 'torrentio',
           raw: stream
         };
-      });
-  }
-
-  function isTorrentioResolveUrl(url) {
-    return /torrentio\.strem\.fun\/resolve\//i.test(String(url || ''));
-  }
-
-  function extractUrlFromResolveBody(data) {
-    if (!data) return '';
-
-    if (typeof data === 'object') {
-      if (data.url) return String(data.url);
-      if (data.link) return String(data.link);
-      if (data.location) return String(data.location);
-      return '';
-    }
-
-    var text = String(data).trim();
-    if (!text) return '';
-
-    if (/^https?:\/\//i.test(text)) return text;
-
-    try {
-      var parsed = JSON.parse(text);
-      if (parsed && parsed.url) return String(parsed.url);
-      if (parsed && parsed.link) return String(parsed.link);
-    } catch (e) {
-      /* not JSON */
-    }
-
-    var match = text.match(/https?:\/\/[^\s"'<>]+/i);
-    return match ? match[0] : '';
-  }
-
-  function xhrResolveFinalUrl(url, method) {
-    return new Promise(function (resolve, reject) {
-      var xhr = new XMLHttpRequest();
-      xhr.open(method || 'HEAD', url, true);
-      xhr.timeout = 25000;
-
-      if (method === 'GET') {
-        xhr.setRequestHeader('Range', 'bytes=0-0');
-      }
-
-      xhr.onload = function () {
-        var finalUrl = xhr.responseURL || url;
-
-        console.log('[TORRENTIO RESOLVE] xhr', {
-          method: method || 'HEAD',
-          status: xhr.status,
-          requestUrl: url,
-          responseURL: xhr.responseURL
-        });
-
-        if (finalUrl && finalUrl !== url) {
-          console.log('[TORRENTIO FINAL URL]', finalUrl);
-          resolve(finalUrl);
-          return;
-        }
-
-        if (method === 'HEAD') {
-          xhrResolveFinalUrl(url, 'GET').then(resolve).catch(reject);
-          return;
-        }
-
-        var fromBody = extractUrlFromResolveBody(xhr.responseText);
-        if (fromBody) {
-          console.log('[TORRENTIO FINAL URL]', fromBody);
-          resolve(fromBody);
-          return;
-        }
-
-        reject(new Error('No final URL after redirect'));
-      };
-
-      xhr.onerror = function () {
-        reject(new Error('XHR network error'));
-      };
-
-      xhr.ontimeout = function () {
-        reject(new Error('XHR timeout'));
-      };
-
-      xhr.send();
-    });
-  }
-
-  function nativeResolveFinalUrl(url) {
-    return new Promise(function (resolve, reject) {
-      if (typeof Lampa === 'undefined' || typeof Lampa.Reguest !== 'function') {
-        reject(new Error('Lampa.Reguest is not available'));
-        return;
-      }
-
-      var req = new Lampa.Reguest();
-
-      req.native(
-        url,
-        function (data) {
-          console.log('[TORRENTIO RESOLVE] native response', data);
-
-          var fromBody = extractUrlFromResolveBody(data);
-          if (fromBody && !isTorrentioResolveUrl(fromBody)) {
-            console.log('[TORRENTIO FINAL URL]', fromBody);
-            resolve(fromBody);
-            return;
-          }
-
-          reject(new Error('Native resolve did not return a final URL'));
-        },
-        function (err) {
-          reject(err || new Error('Native resolve failed'));
-        }
-      );
-    });
-  }
-
-  function fetchResolveFinalUrl(url) {
-    return new Promise(function (resolve, reject) {
-      if (typeof window.fetch !== 'function') {
-        reject(new Error('fetch is not available'));
-        return;
-      }
-
-      var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-      var timeoutId = setTimeout(function () {
-        if (controller) controller.abort();
-      }, 25000);
-
-      var opts = { method: 'HEAD', redirect: 'follow', mode: 'cors' };
-      if (controller) opts.signal = controller.signal;
-
-      window
-        .fetch(url, opts)
-        .then(function (response) {
-          clearTimeout(timeoutId);
-
-          console.log('[TORRENTIO RESOLVE] fetch', {
-            status: response.status,
-            type: response.type,
-            url: response.url
-          });
-
-          if (response.url && response.url !== url && !isTorrentioResolveUrl(response.url)) {
-            console.log('[TORRENTIO FINAL URL]', response.url);
-            resolve(response.url);
-            return;
-          }
-
-          reject(new Error('fetch did not expose a final URL'));
-        })
-        .catch(function (err) {
-          clearTimeout(timeoutId);
-          reject(err);
-        });
-    });
-  }
-
-  function resolveTorrentioStreamUrl(resolveUrl) {
-    var url = String(resolveUrl || '').trim();
-
-    if (!url) {
-      return Promise.reject(new Error('Empty resolve URL'));
-    }
-
-    console.log('[TORRENTIO RESOLVE]', url);
-
-    if (!isTorrentioResolveUrl(url)) {
-      console.log('[TORRENTIO FINAL URL]', url);
-      return Promise.resolve(url);
-    }
-
-    return xhrResolveFinalUrl(url, 'HEAD')
-      .catch(function () {
-        return fetchResolveFinalUrl(url);
-      })
-      .catch(function () {
-        return nativeResolveFinalUrl(url);
       });
   }
 
@@ -421,6 +252,27 @@
 
   function isSearchStale(searchId) {
     return searchId != null && searchId !== activeSearchId;
+  }
+
+  function logStaleCheck(searchId, where) {
+    var stale = isSearchStale(searchId);
+
+    console.log('[STALE CHECK]', {
+      where: where || '',
+      searchId: searchId,
+      activeSearchId: activeSearchId,
+      stale: stale,
+      searchInProgress: searchInProgress,
+      activeSearchMovieId: activeSearchMovieId
+    });
+
+    return stale;
+  }
+
+  function endSearchSession(searchId) {
+    if (activeSearchId === searchId) {
+      searchInProgress = false;
+    }
   }
 
   function escapeHtml(str) {
@@ -1194,7 +1046,7 @@
         console.log('[CANDIDATES VARIABLE]', candidates);
         console.log('[CANDIDATES LENGTH]', candidates.length);
 
-        if (isSearchStale(searchId)) {
+        if (logStaleCheck(searchId, 'searchPublicCachedTorrents')) {
           console.log('[PIPELINE] searchPublicCachedTorrents — stale search, abort');
           return [];
         }
@@ -1349,7 +1201,7 @@
     console.log('[STEP] snapshot movie id', movie && movie.id, 'title', movie && movie.title);
 
     return fetchReadyMagnets().then(function (readyList) {
-      if (isSearchStale(searchId)) {
+      if (logStaleCheck(searchId, 'searchAccountLibraryFallback.afterFetchReadyMagnets')) {
         console.log('[STEP] searchAccountLibraryFallback — stale search after fetchReadyMagnets, abort');
         return [];
       }
@@ -1867,7 +1719,52 @@
     return adRequest('/link/unlock', { link: link }, 'POST');
   }
 
-  function openLampaPlayer(url, movie, info, fileName) {
+  function getTorrentioPlayUrl(stream, row) {
+    stream = stream || {};
+    row = row || {};
+
+    if (row.directUrl) {
+      return String(row.directUrl).trim();
+    }
+
+    if (stream.externalUrl) {
+      return String(stream.externalUrl).trim();
+    }
+
+    return String(stream.url || '').trim();
+  }
+
+  /**
+   * Torrentio playback: stream.url / directUrl → Lampa.Player.play (no preflight).
+   * Redirect resolve → debrid.it is handled inside the player, not via XHR/fetch.
+   */
+  function playTorrentioStream(stream, movie, info, row) {
+    stream = stream || {};
+    row = row || {};
+    var playUrl = getTorrentioPlayUrl(stream, row);
+
+    if (!playUrl) {
+      Lampa.Noty.show('Stream URL is missing');
+      return;
+    }
+
+    console.log('[TORRENTIO] direct play url (no preflight)', playUrl);
+
+    var extra = {
+      torrentio: true,
+      name: (row && row.title) || stream.name || stream.title || info.title
+    };
+
+    if (stream.behaviorHints && stream.behaviorHints.proxyHeaders) {
+      extra.headers = stream.behaviorHints.proxyHeaders;
+    }
+
+    openLampaPlayer(playUrl, movie, info, extra.name, extra);
+  }
+
+  function openLampaPlayer(url, movie, info, fileName, extra) {
+    extra = extra || {};
+
     console.log('[AllDebrid] stream url', url);
     console.log('[AllDebrid] opening player');
 
@@ -1881,11 +1778,23 @@
         throw new Error('Lampa.Player.play not available');
       }
 
-      Lampa.Player.play({
+      var playParams = {
         url: url,
         title: info.title || fileName || 'AllDebrid',
         card: movie
-      });
+      };
+
+      if (extra.headers) {
+        playParams.headers = extra.headers;
+      }
+
+      if (extra.name) {
+        playParams.name = extra.name;
+      }
+
+      console.log('[AllDebrid] Player.play', playParams);
+
+      Lampa.Player.play(playParams);
     } catch (err) {
       console.error('[AllDebrid] player error', err);
       Lampa.Noty.show('Playback failed');
@@ -1939,36 +1848,10 @@
     console.log('[AllDebrid] selected result', row);
 
     if (row && row.source === 'torrentio') {
-      var playUrl = row.directUrl || (row.raw && row.raw.url) || '';
-
-      if (!playUrl) {
-        Lampa.Noty.show('Stream URL is missing');
-        return;
-      }
-
-      Lampa.Loading.start(function () {
-        Lampa.Loading.stop();
-      });
-
-      resolveTorrentioStreamUrl(playUrl)
-        .then(function (finalUrl) {
-          Lampa.Loading.stop();
-
-          if (!finalUrl || isTorrentioResolveUrl(finalUrl)) {
-            Lampa.Noty.show('Unable to resolve stream URL');
-            return;
-          }
-
-          openLampaPlayer(finalUrl, movie, info, row.title);
-        })
-        .catch(function (err) {
-          Lampa.Loading.stop();
-          console.error('[TORRENTIO] resolve failed', err);
-          Lampa.Noty.show('Unable to resolve stream URL');
-        });
-
+      playTorrentioStream(row.raw || {}, movie, info, row);
       return;
     }
+
 
     Lampa.Loading.start(function () {
       Lampa.Loading.stop();
@@ -2017,7 +1900,7 @@
     console.log('[AllDebrid] search for', info);
 
     return searchAccountLibraryFallback(movie, searchId).then(function (results) {
-      if (isSearchStale(searchId)) {
+      if (logStaleCheck(searchId, 'searchCachedTorrents.afterAccountFallback')) {
         console.log('[PIPELINE] searchCachedTorrents — stale search');
         return [];
       }
@@ -2170,14 +2053,39 @@
     console.log('[SEARCH MOVIE]', movie);
     logMovieDataSources('onAllDebridClick — snapshot (passed to search)', movie);
 
+    var movieId = getMovieId(movie);
+    var now = Date.now();
+
+    if (
+      searchInProgress &&
+      activeSearchMovieId === movieId &&
+      now - lastSearchClickAt < SEARCH_CLICK_DEBOUNCE_MS
+    ) {
+      console.log('[AllDebrid] duplicate search click ignored (no new searchId)', {
+        movieId: movieId,
+        activeSearchId: activeSearchId,
+        msSinceLastClick: now - lastSearchClickAt
+      });
+      return;
+    }
+
+    lastSearchClickAt = now;
     var searchId = ++activeSearchId;
+    activeSearchMovieId = movieId;
+    searchInProgress = true;
+
     var info = extractMovieInfo(movie);
 
     console.log('[AllDebrid] movie (snapshot)', movie);
     console.log('[AllDebrid] movie info', info);
-    console.log('[STEP] search started searchId', searchId, 'movie id', movie.id);
+    console.log('[STEP] search started', {
+      searchId: searchId,
+      activeSearchId: activeSearchId,
+      movieId: movieId
+    });
 
     if (!ensureApiKeyConfigured()) {
+      searchInProgress = false;
       return;
     }
 
@@ -2200,7 +2108,7 @@
             return;
           }
 
-          if (isSearchStale(searchId)) {
+          if (logStaleCheck(searchId, 'showCachedSearchResults.then')) {
             console.log('[STEP] ignoring stale search results searchId', searchId);
             Lampa.Loading.stop();
             return;
@@ -2227,13 +2135,17 @@
 
           Lampa.Noty.show('AllDebrid: ' + (err.message || 'search failed'));
           showMovieInfoModal(info);
+        })
+        .then(function () {
+          endSearchSession(searchId);
         });
     }
 
     getTorrentioStreams(info.imdb_id)
       .then(function (streams) {
-        if (isSearchStale(searchId)) {
+        if (logStaleCheck(searchId, 'getTorrentioStreams.then')) {
           Lampa.Loading.stop();
+          endSearchSession(searchId);
           return;
         }
 
@@ -2252,6 +2164,7 @@
           Lampa.Loading.stop();
           console.log('[TORRENTIO] UI results', torrentioResults);
           showResultsModal(info, torrentioResults, movie);
+          endSearchSession(searchId);
           return;
         }
 
@@ -2260,6 +2173,13 @@
       })
       .catch(function (err) {
         console.warn('[TORRENTIO] fallback to searchCachedTorrents', err);
+
+        if (logStaleCheck(searchId, 'getTorrentioStreams.catch')) {
+          Lampa.Loading.stop();
+          endSearchSession(searchId);
+          return;
+        }
+
         return showCachedSearchResults();
       });
   }
