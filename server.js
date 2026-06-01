@@ -1723,89 +1723,6 @@
     return /torrentio\.strem\.fun\/resolve\/alldebrid\//i.test(String(url || ''));
   }
 
-  function isDebridHostLink(url) {
-    return /\.debrid\.it\//i.test(String(url || ''));
-  }
-
-  function extractUrlFromNativeResolveData(data) {
-    if (data && typeof data === 'object' && data.url) {
-      return String(data.url).trim();
-    }
-
-    var text = typeof data === 'string' ? data.trim() : '';
-
-    if (/^https?:\/\//i.test(text)) {
-      return text;
-    }
-
-    if (text) {
-      try {
-        var parsed = JSON.parse(text);
-        if (parsed && parsed.url) {
-          return String(parsed.url).trim();
-        }
-      } catch (e) {
-        /* not JSON */
-      }
-    }
-
-    return '';
-  }
-
-  /**
-   * Torrentio playback step 1: Lampa.Reguest().native() on torrentio resolve URL only.
-   * No fetch/XHR/HEAD in plugin; do not call native on debrid.it URLs.
-   */
-  function nativeTorrentioResolve(torrentioResolveUrl) {
-    return new Promise(function (resolve, reject) {
-      if (!isTorrentioResolvePlayUrl(torrentioResolveUrl)) {
-        reject(new Error('nativeTorrentioResolve: not a torrentio resolve URL'));
-        return;
-      }
-
-      if (isDebridHostLink(torrentioResolveUrl)) {
-        reject(new Error('nativeTorrentioResolve: debrid.it must not be resolved in browser'));
-        return;
-      }
-
-      function onNativeData(data) {
-        var hostLink = extractUrlFromNativeResolveData(data);
-
-        if (!hostLink) {
-          reject(new Error('Native resolve returned no host link'));
-          return;
-        }
-
-        if (isDebridHostLink(hostLink) || isTorrentioResolvePlayUrl(hostLink)) {
-          resolve(hostLink);
-          return;
-        }
-
-        reject(new Error('Native resolve returned unexpected URL'));
-      }
-
-      function onNativeError(err) {
-        reject(err || new Error('Native resolve failed'));
-      }
-
-      if (typeof Android !== 'undefined' && typeof Android.httpReq === 'function') {
-        Android.httpReq({ url: torrentioResolveUrl, timeout: 30000 }, {
-          complite: onNativeData,
-          error: onNativeError
-        });
-        return;
-      }
-
-      if (typeof Lampa === 'undefined' || typeof Lampa.Reguest !== 'function') {
-        reject(new Error('Lampa.Reguest is not available'));
-        return;
-      }
-
-      var req = new Lampa.Reguest();
-      req.native(torrentioResolveUrl, onNativeData, onNativeError);
-    });
-  }
-
   function getTorrentioPlayUrl(stream, row) {
     stream = stream || {};
     row = row || {};
@@ -1826,8 +1743,8 @@
   }
 
   /**
-   * Torrentio playback: native(torrentio resolve) → unlockLink(API) → Player(unlocked only).
-   * No fetch/XHR/HEAD to debrid.it in plugin; never pass hoster or resolve URL to Player.
+   * Torrentio playback: resolve URL → AllDebrid /link/unlock (server-side) → Player.
+   * No native/fetch/XHR/HEAD to torrentio or debrid.it in the browser.
    */
   function playTorrentioStream(stream, movie, info, row) {
     stream = stream || {};
@@ -1852,26 +1769,16 @@
       Lampa.Loading.stop();
     });
 
-    nativeTorrentioResolve(playUrl)
-      .then(function (hostLink) {
-        console.log('[TORRENTIO PLAY] native resolved', hostLink);
+    console.log('[TORRENTIO PLAY] unlock request', playUrl);
 
-        if (isDebridHostLink(hostLink)) {
-          return unlockLink(hostLink);
-        }
-
-        if (isTorrentioResolvePlayUrl(hostLink)) {
-          return unlockLink(hostLink);
-        }
-
-        return Promise.reject(new Error('Unexpected host link after native resolve'));
-      })
+    unlockLink(playUrl)
       .then(function (unlockResponse) {
+        console.log('[TORRENTIO PLAY] unlock response', unlockResponse);
+
         if (!unlockResponse || !unlockResponse.link) {
           return Promise.reject(new Error('unlockLink returned no link'));
         }
 
-        console.log('[TORRENTIO PLAY] unlocked', unlockResponse.link);
         console.log('[TORRENTIO PLAY] final player url', unlockResponse.link);
 
         Lampa.Loading.stop();
