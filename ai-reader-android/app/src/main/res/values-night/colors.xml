@@ -1,0 +1,7 @@
+<resources>
+    <color name="accent">#E07A52</color>
+    <color name="surface">#1E1D1B</color>
+    <color name="on_surface">#ECEAE5</color>
+    <color name="muted">#A29E96</color>
+    <color name="field">#2C2A27</color>
+</resources>

@@ -1,0 +1,8 @@
+<resources>
+    <color name="accent">#C2552E</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="on_surface">#1F1E1C</color>
+    <color name="muted">#6B6862</color>
+    <color name="field">#F2EFEA</color>
+    <color name="launcher_bg">#C2552E</color>
+</resources>

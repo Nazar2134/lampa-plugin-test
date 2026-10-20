@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="24dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Settings"
+            android:textColor="@color/on_surface"
+            android:textSize="28sp"
+            android:textStyle="bold" />
+
+        <TextView
+            style="@style/SectionLabel"
+            android:text="Explain in this language" />
+
+        <EditText
+            android:id="@+id/language"
+            style="@style/Field"
+            android:hint="e.g. English, Ukrainian"
+            android:inputType="textCapWords"
+            android:singleLine="true" />
+
+        <TextView
+            style="@style/SectionLabel"
+            android:text="How much detail" />
+
+        <RadioGroup
+            android:id="@+id/detail"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <RadioButton
+                android:id="@+id/detailBrief"
+                style="@style/Choice"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:text="Brief" />
+
+            <RadioButton
+                android:id="@+id/detailFull"
+                style="@style/Choice"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:text="Detailed" />
+        </RadioGroup>
+
+        <TextView
+            style="@style/SectionLabel"
+            android:layout_marginTop="32dp"
+            android:text="Answers inside the reader (free)"
+            android:textSize="18sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:lineSpacingMultiplier="1.2"
+            android:text="Uses Google Gemini's free tier. Get a key at Google AI Studio: sign in with a Google account, tap “Create API key”, and paste it here. No card needed. The free tier has daily limits, and Google may use free-tier requests to improve its models."
+            android:textColor="@color/muted"
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/getKey"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:paddingVertical="10dp"
+            android:text="Get a free key at aistudio.google.com →"
+            android:textColor="@color/accent"
+            android:textSize="15sp" />
+
+        <EditText
+            android:id="@+id/geminiKey"
+            style="@style/Field"
+            android:hint="Paste your Gemini API key"
+            android:inputType="textPassword"
+            android:singleLine="true" />
+
+        <RadioGroup
+            android:id="@+id/model"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp">
+
+            <RadioButton
+                android:id="@+id/modelFlash"
+                style="@style/Choice"
+                android:text="Gemini Flash: better explanations" />
+
+            <RadioButton
+                android:id="@+id/modelLite"
+                style="@style/Choice"
+                android:text="Gemini Flash-Lite: faster, more free requests" />
+        </RadioGroup>
+
+        <Button
+            android:id="@+id/check"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/field_bg"
+            android:text="Save and test the key"
+            android:textAllCaps="false"
+            android:textColor="@color/accent" />
+
+        <TextView
+            android:id="@+id/checkResult"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:textColor="@color/muted"
+            android:textSize="14sp"
+            android:visibility="gone" />
+
+        <TextView
+            style="@style/SectionLabel"
+            android:layout_marginTop="32dp"
+            android:text="Ask Claude / Ask ChatGPT"
+            android:textSize="18sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:lineSpacingMultiplier="1.2"
+            android:text="These buttons in the answer panel open the Claude or ChatGPT app (or website) with your question already written, using your own free account. Nothing to set up. Install the apps from the Play Store if you don't have them."
+            android:textColor="@color/muted"
+            android:textSize="14sp" />
+    </LinearLayout>
+</ScrollView>
