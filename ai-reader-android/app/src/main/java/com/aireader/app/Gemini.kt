@@ -23,7 +23,7 @@ object Gemini {
         history: List<Turn>,
         onConnect: (HttpURLConnection) -> Unit,
         onText: (String) -> Unit,
-    ): AiOutcome {
+    ): AiResult {
         val conn = URL("$baseUrl/v1beta/models/$model:streamGenerateContent?alt=sse").openConnection() as HttpURLConnection
         try {
             conn.requestMethod = "POST"
@@ -35,14 +35,20 @@ object Gemini {
             onConnect(conn)
             conn.outputStream.use { it.write(requestBody(system, history).toByteArray(Charsets.UTF_8)) }
             val code = conn.responseCode
-            if (code >= 400) throw apiError(code, conn.errorStream)
+            if (code >= 400) throw apiError(code, conn.errorStream, conn.retryAfter())
 
             var outcome = AiOutcome.FINISHED
+            var inputTokens = 0
+            var outputTokens = 0
             conn.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
                 while (true) {
                     val line = reader.readLine() ?: break
                     if (!line.startsWith("data:")) continue
                     val chunk = runCatching { JSONObject(line.substring(5).trim()) }.getOrNull() ?: continue
+                    chunk.optJSONObject("usageMetadata")?.let {
+                        inputTokens = it.optInt("promptTokenCount", inputTokens)
+                        outputTokens = it.optInt("candidatesTokenCount") + it.optInt("thoughtsTokenCount")
+                    }
                     if (chunk.optJSONObject("promptFeedback")?.optString("blockReason").orEmpty().isNotEmpty()) outcome = AiOutcome.BLOCKED
                     val candidate = chunk.optJSONArray("candidates")?.optJSONObject(0) ?: continue
                     val parts = candidate.optJSONObject("content")?.optJSONArray("parts")
@@ -61,7 +67,7 @@ object Gemini {
                     }
                 }
             }
-            return outcome
+            return AiResult(outcome, inputTokens, outputTokens)
         } finally {
             conn.disconnect()
         }
@@ -140,9 +146,9 @@ object Gemini {
             .firstOrNull()
     }
 
-    private fun apiError(code: Int, body: InputStream?): ApiException {
+    private fun apiError(code: Int, body: InputStream?, retryAfter: Int? = null): ApiException {
         val error = runCatching { JSONObject(body!!.bufferedReader().readText()).getJSONObject("error") }.getOrNull()
-        return ApiException(code, error?.optString("status").orEmpty(), error?.optString("message").orEmpty().ifEmpty { "HTTP $code" })
+        return ApiException(code, error?.optString("status").orEmpty(), error?.optString("message").orEmpty().ifEmpty { "HTTP $code" }, retryAfter)
     }
 
     /** A message for the reader explaining what went wrong and what to do. */

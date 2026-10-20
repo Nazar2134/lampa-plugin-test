@@ -55,6 +55,7 @@ class SettingsActivity : Activity() {
             checkResult.visibility = View.GONE
             showProviderSection()
         }
+        showUsage()
 
         findViewById<View>(R.id.getGeminiKey).setOnClickListener { openUrl("https://aistudio.google.com/apikey") }
         findViewById<View>(R.id.getDeepseekKey).setOnClickListener { openUrl("https://platform.deepseek.com/api_keys") }
@@ -68,6 +69,27 @@ class SettingsActivity : Activity() {
 
     private fun selectedProvider() =
         if (provider.checkedRadioButtonId == R.id.providerDeepseek) AiProvider.DEEPSEEK else AiProvider.GEMINI
+
+    /** This month's AI requests and tokens, with a cost estimate for DeepSeek at its published peak prices. */
+    private fun showUsage() {
+        val db = ReaderDb.get(this)
+        val month = java.util.Calendar.getInstance().apply {
+            set(java.util.Calendar.DAY_OF_MONTH, 1); set(java.util.Calendar.HOUR_OF_DAY, 0); set(java.util.Calendar.MINUTE, 0)
+        }.timeInMillis
+        val lines = AiProvider.entries.mapNotNull { p ->
+            val u = db.usage(p, month)
+            if (u.requests == 0) return@mapNotNull null
+            val tokens = "%,d tokens in, %,d out".format(u.inputTokens, u.outputTokens)
+            val cost = if (p == AiProvider.DEEPSEEK) {
+                val pro = prefs.load().deepseekModel == DeepSeek.MODEL_PRO
+                val (inPrice, outPrice) = if (pro) 1.32 to 3.96 else 0.30 to 1.20
+                " · at most about $%.3f".format((u.inputTokens * inPrice + u.outputTokens * outPrice) / 1_000_000)
+            } else " · free tier"
+            "${Ai.name(p)}: ${u.requests} ${if (u.requests == 1) "request" else "requests"}, $tokens$cost"
+        }
+        findViewById<TextView>(R.id.usage).text =
+            if (lines.isEmpty()) "No AI requests this month yet." else "This month\n" + lines.joinToString("\n")
+    }
 
     private fun showProviderSection() {
         val deepseek = selectedProvider() == AiProvider.DEEPSEEK

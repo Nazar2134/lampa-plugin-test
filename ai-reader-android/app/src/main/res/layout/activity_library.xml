@@ -38,6 +38,13 @@
             android:tint="@color/on_surface" />
 
         <ImageButton
+            android:id="@+id/vocabulary"
+            style="@style/ToolbarIcon"
+            android:contentDescription="Vocabulary"
+            android:src="@drawable/ic_translate"
+            android:tint="@color/on_surface" />
+
+        <ImageButton
             android:id="@+id/settings"
             style="@style/ToolbarIcon"
             android:contentDescription="Settings"

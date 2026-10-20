@@ -36,7 +36,9 @@ class EpubBook(file: File, fallbackTitle: String) : BookContent {
         if (title.isBlank()) title = fallbackTitle
     }
 
-    private fun stream(path: String) = zip.getEntry(path)?.let { zip.getInputStream(it) }
+    private fun stream(path: String) = zip.getEntry(path)?.let { CappedInputStream(zip.getInputStream(it), Limits.MAX_ENTRY_BYTES) }
+
+    private fun bytes(path: String): ByteArray? = stream(path)?.use { it.readBytes() }
 
     private fun parse() {
         val opfPath = stream("META-INF/container.xml")?.use { input ->
@@ -83,7 +85,9 @@ class EpubBook(file: File, fallbackTitle: String) : BookContent {
 
         for (id in spineIds) {
             val path = manifest[id] ?: continue
-            if ("html" !in mediaTypes[path].orEmpty() && "xml" !in mediaTypes[path].orEmpty()) continue
+            // Chapters are (X)HTML; image-only spine items such as SVG covers are skipped.
+            val type = mediaTypes[path].orEmpty()
+            if ("html" !in type && type != "application/xml" && type != "text/xml") continue
             spineIndex.putIfAbsent(path, spine.size)
             spine += path
         }
@@ -158,8 +162,7 @@ class EpubBook(file: File, fallbackTitle: String) : BookContent {
     override fun chapterOfAnchor(id: String): Int? = null
 
     override fun load(path: String): Resource? {
-        val entry = zip.getEntry(path) ?: return null
-        val bytes = zip.getInputStream(entry).use { it.readBytes() }
+        val bytes = bytes(path) ?: return null
         val mime = mediaTypes[path]?.takeIf { it.isNotBlank() } ?: Paths.mime(path)
         val isChapter = path in spineIndex
         return Resource(if (isChapter) "text/html" else mime, bytes, isChapter)
@@ -167,7 +170,7 @@ class EpubBook(file: File, fallbackTitle: String) : BookContent {
 
     override fun cover(): ByteArray? {
         val path = coverPath ?: mediaTypes.keys.firstOrNull { it.substringAfterLast('/').startsWith("cover", ignoreCase = true) && mediaTypes[it].orEmpty().startsWith("image/") }
-        return path?.let { p -> zip.getEntry(p)?.let { zip.getInputStream(it).use { s -> s.readBytes() } } }
+        return path?.let { bytes(it) }
     }
 
     override fun close() = zip.close()

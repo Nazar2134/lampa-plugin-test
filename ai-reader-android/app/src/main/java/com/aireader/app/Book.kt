@@ -1,6 +1,9 @@
 package com.aireader.app
 
 import java.io.Closeable
+import java.io.FilterInputStream
+import java.io.IOException
+import java.io.InputStream
 import java.io.File
 import java.util.Locale
 import java.util.zip.ZipFile
@@ -37,6 +40,31 @@ enum class BookFormat(val extension: String) { EPUB("epub"), FB2("fb2"), FB2_ZIP
 
 class UnsupportedBookException(cause: Throwable? = null) : Exception("Not an EPUB or FB2 book", cause)
 
+class BookTooLargeException : IOException("This file is too large to open")
+
+/** Caps for untrusted book files, so a malformed or hostile archive can't exhaust memory. */
+object Limits {
+    const val MAX_BOOK_BYTES = 200L shl 20
+    const val MAX_ENTRY_BYTES = 64L shl 20
+    const val MAX_FB2_BYTES = 120L shl 20
+}
+
+/** Throws [BookTooLargeException] once more than [max] bytes have been read. */
+class CappedInputStream(input: InputStream, private val max: Long) : FilterInputStream(input) {
+    private var count = 0L
+
+    private fun add(n: Int): Int {
+        if (n > 0) {
+            count += n
+            if (count > max) throw BookTooLargeException()
+        }
+        return n
+    }
+
+    override fun read(): Int = super.read().also { if (it >= 0) add(1) }
+    override fun read(b: ByteArray, off: Int, len: Int): Int = add(super.read(b, off, len))
+}
+
 object BookOpener {
     fun detect(file: File): BookFormat? {
         val head = file.inputStream().use { input -> ByteArray(1024).let { it.copyOf(input.read(it).coerceAtLeast(0)) } }
@@ -56,6 +84,7 @@ object BookOpener {
     }
 
     fun open(file: File, fallbackTitle: String = file.nameWithoutExtension): BookContent {
+        if (file.length() > Limits.MAX_BOOK_BYTES) throw BookTooLargeException()
         val format = detect(file) ?: throw UnsupportedBookException()
         return try {
             when (format) {
@@ -63,6 +92,8 @@ object BookOpener {
                 BookFormat.FB2 -> Fb2Book(file, zipped = false, fallbackTitle)
                 BookFormat.FB2_ZIP -> Fb2Book(file, zipped = true, fallbackTitle)
             }
+        } catch (e: BookTooLargeException) {
+            throw e
         } catch (e: Exception) {
             throw UnsupportedBookException(e)
         }

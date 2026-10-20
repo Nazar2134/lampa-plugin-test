@@ -61,9 +61,15 @@
             android:src="@drawable/ic_sparkle" />
 
         <ImageButton
+            android:id="@+id/bookmark"
+            style="@style/ToolbarIcon"
+            android:contentDescription="Bookmark this page"
+            android:src="@drawable/ic_bookmark" />
+
+        <ImageButton
             android:id="@+id/toc"
             style="@style/ToolbarIcon"
-            android:contentDescription="Contents"
+            android:contentDescription="Contents, bookmarks, notes and search"
             android:src="@drawable/ic_toc" />
 
         <TextView
@@ -84,72 +90,50 @@
         android:layout_height="wrap_content"
         android:layout_gravity="top"
         android:layout_marginHorizontal="12dp"
-        android:layout_marginTop="110dp"
         android:elevation="8dp"
         android:orientation="vertical"
         android:padding="12dp"
         android:visibility="gone">
 
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:gravity="center_vertical">
-
-            <TextView
-                android:id="@+id/fontSmaller"
-                style="@style/StyleChip"
-                android:text="A−"
-                android:textSize="15sp" />
-
-            <TextView
-                android:id="@+id/fontSizeLabel"
-                style="@style/StyleChip"
-                android:background="@null" />
-
-            <TextView
-                android:id="@+id/fontBigger"
-                style="@style/StyleChip"
-                android:text="A+"
-                android:textSize="21sp" />
+        <LinearLayout style="@style/StyleRow">
+            <TextView style="@style/StyleRowLabel" android:text="Size" />
+            <TextView android:id="@+id/fontSmaller" style="@style/StyleChip" android:contentDescription="Smaller text" android:text="A−" android:textSize="15sp" />
+            <TextView android:id="@+id/fontSizeLabel" style="@style/StyleChip" android:background="@null" />
+            <TextView android:id="@+id/fontBigger" style="@style/StyleChip" android:contentDescription="Larger text" android:text="A+" android:textSize="21sp" />
         </LinearLayout>
 
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp">
-
-            <TextView
-                android:id="@+id/fontSerif"
-                style="@style/StyleChip"
-                android:fontFamily="serif"
-                android:text="Serif" />
-
-            <TextView
-                android:id="@+id/fontSans"
-                style="@style/StyleChip"
-                android:fontFamily="sans-serif"
-                android:text="Sans" />
+        <LinearLayout style="@style/StyleRow">
+            <TextView style="@style/StyleRowLabel" android:text="Font" />
+            <TextView android:id="@+id/fontSerif" style="@style/StyleChip" android:fontFamily="serif" android:text="Serif" />
+            <TextView android:id="@+id/fontSans" style="@style/StyleChip" android:fontFamily="sans-serif" android:text="Sans" />
+            <TextView android:id="@+id/fontPublisher" style="@style/StyleChip" android:text="Book's" />
         </LinearLayout>
 
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp">
+        <LinearLayout style="@style/StyleRow">
+            <TextView style="@style/StyleRowLabel" android:text="Spacing" />
+            <TextView android:id="@+id/spacingLess" style="@style/StyleChip" android:contentDescription="Less line spacing" android:text="−" />
+            <TextView android:id="@+id/spacingLabel" style="@style/StyleChip" android:background="@null" />
+            <TextView android:id="@+id/spacingMore" style="@style/StyleChip" android:contentDescription="More line spacing" android:text="+" />
+        </LinearLayout>
 
-            <TextView
-                android:id="@+id/themeLight"
-                style="@style/StyleChip"
-                android:text="Light" />
+        <LinearLayout style="@style/StyleRow">
+            <TextView style="@style/StyleRowLabel" android:text="Margins" />
+            <TextView android:id="@+id/marginNarrow" style="@style/StyleChip" android:text="Narrow" />
+            <TextView android:id="@+id/marginNormal" style="@style/StyleChip" android:text="Normal" />
+            <TextView android:id="@+id/marginWide" style="@style/StyleChip" android:text="Wide" />
+        </LinearLayout>
 
-            <TextView
-                android:id="@+id/themeSepia"
-                style="@style/StyleChip"
-                android:text="Sepia" />
+        <LinearLayout style="@style/StyleRow">
+            <TextView style="@style/StyleRowLabel" android:text="Align" />
+            <TextView android:id="@+id/alignJustify" style="@style/StyleChip" android:text="Justified" />
+            <TextView android:id="@+id/alignLeft" style="@style/StyleChip" android:text="Left" />
+        </LinearLayout>
 
-            <TextView
-                android:id="@+id/themeDark"
-                style="@style/StyleChip"
-                android:text="Dark" />
+        <LinearLayout style="@style/StyleRow">
+            <TextView style="@style/StyleRowLabel" android:text="Theme" />
+            <TextView android:id="@+id/themeLight" style="@style/StyleChip" android:text="Light" />
+            <TextView android:id="@+id/themeSepia" style="@style/StyleChip" android:text="Sepia" />
+            <TextView android:id="@+id/themeDark" style="@style/StyleChip" android:text="Dark" />
         </LinearLayout>
     </LinearLayout>
 
@@ -158,6 +142,7 @@
         android:layout_width="match_parent"
         android:layout_height="400dp"
         android:layout_gravity="bottom"
+        android:accessibilityPaneTitle="AI assistant"
         android:clickable="true"
         android:elevation="16dp"
         android:orientation="vertical"
@@ -192,11 +177,47 @@
                 android:src="@drawable/ic_close" />
         </LinearLayout>
 
+        <HorizontalScrollView
+            android:id="@+id/aiChipScroll"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:scrollbars="none">
+
+            <LinearLayout
+                android:id="@+id/aiChips"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal" />
+        </HorizontalScrollView>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center_vertical">
+
+            <TextView android:id="@+id/aiLanguage" style="@style/Pill" android:contentDescription="Answer language" />
+            <TextView android:id="@+id/aiLevel" style="@style/Pill" android:contentDescription="Simplify level" />
+            <View android:layout_width="0dp" android:layout_height="1dp" android:layout_weight="1" />
+            <TextView android:id="@+id/aiRegenerate" style="@style/Pill" android:contentDescription="New answer" android:text="↻" />
+            <TextView android:id="@+id/aiSaveWord" style="@style/Pill" android:text="☆ Save word" />
+            <TextView android:id="@+id/aiNewChat" style="@style/Pill" android:text="New chat" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/aiStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:textSize="12sp"
+            android:visibility="gone" />
+
         <ScrollView
             android:id="@+id/aiScroll"
             android:layout_width="match_parent"
             android:layout_height="0dp"
-            android:layout_marginTop="10dp"
+            android:layout_marginTop="8dp"
             android:layout_weight="1">
 
             <LinearLayout

@@ -35,7 +35,7 @@ class GeminiTest {
         val text = StringBuilder()
         val outcome = Gemini.stream("key-123", Gemini.MODEL_FLASH, "SYSTEM", listOf(Turn(true, "Q1"), Turn(false, "A1"), Turn(true, "Q2")), {}) { text.append(it) }
 
-        assertEquals(AiOutcome.FINISHED, outcome)
+        assertEquals(AiOutcome.FINISHED, outcome.outcome)
         assertEquals("Hallo Welt", text.toString())
         assertEquals("POST /v1beta/models/gemini-flash-latest:streamGenerateContent?alt=sse HTTP/1.1", server.last.line)
         assertEquals("key-123", server.last.headers["x-goog-api-key"])
@@ -49,9 +49,9 @@ class GeminiTest {
     @Test
     fun reportsBlockedAndTruncated() {
         respond(sse("""{"promptFeedback":{"blockReason":"SAFETY"}}"""))
-        assertEquals(AiOutcome.BLOCKED, Gemini.stream("k", "m", "s", listOf(Turn(true, "q")), {}) {})
+        assertEquals(AiOutcome.BLOCKED, Gemini.stream("k", "m", "s", listOf(Turn(true, "q")), {}) {}.outcome)
         respond(sse("""{"candidates":[{"content":{"parts":[{"text":"x"}]},"finishReason":"MAX_TOKENS"}]}"""))
-        assertEquals(AiOutcome.TRUNCATED, Gemini.stream("k", "m", "s", listOf(Turn(true, "q")), {}) {})
+        assertEquals(AiOutcome.TRUNCATED, Gemini.stream("k", "m", "s", listOf(Turn(true, "q")), {}) {}.outcome)
     }
 
     @Test
@@ -94,17 +94,20 @@ class GeminiTest {
     }
 
     @Test
-    fun buildsPrompts() {
+    fun readsUsage() {
+        respond(sse("""{"candidates":[{"content":{"parts":[{"text":"x"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":50,"candidatesTokenCount":7,"thoughtsTokenCount":3}}"""))
+        assertEquals(AiResult(AiOutcome.FINISHED, 50, 10), Gemini.stream("k", "m", "s", listOf(Turn(true, "q")), {}) {})
+    }
+
+    @Test
+    fun buildsHandoffPrompts() {
         val s = AppSettings(language = "Ukrainian")
         val book = BookInfo("Der kleine Garten", "Anna Beispiel", "German")
-        val system = Prompts.system(book, s)
-        assertTrue(system, system.contains("\"Der kleine Garten\" by Anna Beispiel, written in German"))
-        assertTrue(system, system.contains("Always answer in Ukrainian"))
-        val explain = Prompts.first(AiAction.EXPLAIN, s, "hätte", "Sie hätte gern länger geschlafen.", "", null)
-        assertTrue(explain, explain.contains("<selection>\nhätte\n</selection>\n<context>\nSie hätte gern länger geschlafen.\n</context>"))
-        assertTrue(explain, explain.lines().none { it.startsWith("            ") })
-        val handoff = Prompts.handoff(book, s, AiAction.EXPLAIN, "hätte", "Sie hätte gern länger geschlafen.", "", null)
+        val handoff = Prompts.handoff(book, s, AiRequest(AiAction.EXPLAIN, "hätte", "Sie hätte gern länger geschlafen."), "")
         assertTrue(handoff, handoff.startsWith("I'm reading \"Der kleine Garten\" by Anna Beispiel."))
         assertTrue(handoff, handoff.contains("explain this in Ukrainian"))
+        assertTrue(handoff, handoff.contains("It appears here: \"Sie hätte gern länger geschlafen.\""))
+        val chat = Prompts.handoff(book, s, AiRequest(AiAction.CHAT, question = "Who is Jonas?"), "page text")
+        assertTrue(chat, chat.contains("Here's the page I'm on") && chat.contains("Who is Jonas?"))
     }
 }

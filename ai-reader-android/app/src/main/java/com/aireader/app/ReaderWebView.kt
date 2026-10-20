@@ -9,9 +9,11 @@ import android.view.MenuItem
 import android.view.View
 import android.webkit.WebView
 
-/** A WebView whose text-selection menu starts with Explain / Translate / Ask AI. */
+enum class SelectionAction(val title: String) { EXPLAIN("Explain"), TRANSLATE("Translate"), HIGHLIGHT("Highlight"), SAVE_WORD("Save word"), ASK("Ask AI") }
+
+/** A WebView whose text-selection menu starts with the reader's own actions. */
 class ReaderWebView(context: Context, attrs: AttributeSet?) : WebView(context, attrs) {
-    var onAiAction: ((AiAction) -> Unit)? = null
+    var onSelectionAction: ((SelectionAction) -> Unit)? = null
 
     override fun startActionMode(callback: ActionMode.Callback?, type: Int): ActionMode? =
         super.startActionMode(callback?.let(::wrap), type)
@@ -21,9 +23,10 @@ class ReaderWebView(context: Context, attrs: AttributeSet?) : WebView(context, a
 
     private fun addItems(menu: Menu): Boolean {
         var added = false
-        ITEMS.forEachIndexed { order, (id, title, _) ->
+        SelectionAction.entries.forEachIndexed { order, action ->
+            val id = FIRST_ID + order
             if (menu.findItem(id) == null) {
-                menu.add(Menu.NONE, id, order, title).setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
+                menu.add(Menu.NONE, id, order, action.title).setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
                 added = true
             }
         }
@@ -44,9 +47,9 @@ class ReaderWebView(context: Context, attrs: AttributeSet?) : WebView(context, a
         }
 
         override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean {
-            val action = ITEMS.firstOrNull { it.first == item.itemId }?.third
+            val action = SelectionAction.entries.getOrNull(item.itemId - FIRST_ID)
                 ?: return inner.onActionItemClicked(mode, item)
-            onAiAction?.invoke(action)
+            onSelectionAction?.invoke(action)
             mode.finish()
             return true
         }
@@ -60,10 +63,6 @@ class ReaderWebView(context: Context, attrs: AttributeSet?) : WebView(context, a
     }
 
     private companion object {
-        val ITEMS = listOf(
-            Triple(0x7f0a7001, "Explain", AiAction.EXPLAIN),
-            Triple(0x7f0a7002, "Translate", AiAction.TRANSLATE),
-            Triple(0x7f0a7003, "Ask AI", AiAction.ASK),
-        )
+        const val FIRST_ID = 0x7f0a7001
     }
 }

@@ -1,0 +1,191 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:gravity="center_vertical"
+            android:paddingStart="4dp"
+            android:paddingEnd="12dp">
+
+            <ImageButton
+                android:id="@+id/back"
+                style="@style/ToolbarIcon"
+                android:contentDescription="Back"
+                android:src="@drawable/ic_back"
+                android:tint="@color/on_surface" />
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Vocabulary"
+                android:textColor="@color/on_surface"
+                android:textSize="22sp"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/review"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:background="@drawable/button_bg"
+                android:paddingHorizontal="16dp"
+                android:text="Review"
+                android:textAllCaps="false"
+                android:textColor="#FFFFFF" />
+        </LinearLayout>
+
+        <EditText
+            android:id="@+id/query"
+            style="@style/Field"
+            android:layout_marginHorizontal="16dp"
+            android:drawableStart="@drawable/ic_search"
+            android:drawablePadding="10dp"
+            android:drawableTint="@color/muted"
+            android:hint="Search words, translations, notes"
+            android:imeOptions="actionSearch"
+            android:inputType="text"
+            android:singleLine="true" />
+
+        <LinearLayout
+            android:id="@+id/filters"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:layout_marginTop="6dp"
+            android:paddingHorizontal="12dp">
+
+            <TextView android:id="@+id/filterAll" style="@style/Tab" android:text="All" />
+            <TextView android:id="@+id/filterNew" style="@style/Tab" android:text="New" />
+            <TextView android:id="@+id/filterLearning" style="@style/Tab" android:text="Learning" />
+            <TextView android:id="@+id/filterKnown" style="@style/Tab" android:text="Known" />
+        </LinearLayout>
+
+        <ListView
+            android:id="@+id/list"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:clipToPadding="false"
+            android:divider="@null"
+            android:paddingBottom="16dp" />
+
+        <TextView
+            android:id="@+id/empty"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:lineSpacingMultiplier="1.2"
+            android:padding="32dp"
+            android:textColor="@color/muted"
+            android:textSize="15sp"
+            android:visibility="gone" />
+    </LinearLayout>
+
+    <!-- Flashcard review -->
+    <LinearLayout
+        android:id="@+id/reviewPanel"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/surface"
+        android:clickable="true"
+        android:orientation="vertical"
+        android:padding="24dp"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:id="@+id/reviewCount"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textColor="@color/muted"
+                android:textSize="14sp" />
+
+            <ImageButton
+                android:id="@+id/reviewClose"
+                style="@style/ToolbarIcon"
+                android:contentDescription="End review"
+                android:src="@drawable/ic_close"
+                android:tint="@color/muted" />
+        </LinearLayout>
+
+        <ScrollView
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_horizontal"
+                android:orientation="vertical"
+                android:paddingTop="40dp">
+
+                <TextView
+                    android:id="@+id/cardWord"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:gravity="center"
+                    android:textColor="@color/on_surface"
+                    android:textSize="32sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/cardSentence"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="20dp"
+                    android:gravity="center"
+                    android:lineSpacingMultiplier="1.25"
+                    android:textColor="@color/muted"
+                    android:textSize="17sp" />
+
+                <TextView
+                    android:id="@+id/cardAnswer"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="32dp"
+                    android:gravity="center"
+                    android:lineSpacingMultiplier="1.25"
+                    android:textColor="@color/on_surface"
+                    android:textSize="18sp"
+                    android:visibility="gone" />
+            </LinearLayout>
+        </ScrollView>
+
+        <Button
+            android:id="@+id/showAnswer"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:background="@drawable/button_bg"
+            android:text="Show answer"
+            android:textAllCaps="false"
+            android:textColor="#FFFFFF"
+            android:textSize="16sp" />
+
+        <LinearLayout
+            android:id="@+id/grades"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:visibility="gone">
+
+            <Button android:id="@+id/gradeAgain" style="@style/GradeButton" android:text="Again" />
+            <Button android:id="@+id/gradeHard" style="@style/GradeButton" android:text="Hard" />
+            <Button android:id="@+id/gradeGood" style="@style/GradeButton" android:text="Good" />
+            <Button android:id="@+id/gradeEasy" style="@style/GradeButton" android:text="Easy" />
+        </LinearLayout>
+    </LinearLayout>
+</FrameLayout>

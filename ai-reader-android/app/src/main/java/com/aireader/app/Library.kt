@@ -38,8 +38,14 @@ class Library(private val context: Context) {
     /** Copies the document into the library. Returns the existing entry if the same book is already there. */
     fun import(uri: Uri): BookEntry {
         val tmp = File(booksDir, "import-${System.nanoTime()}.tmp")
-        context.contentResolver.openInputStream(uri)?.use { input -> tmp.outputStream().use { input.copyTo(it) } }
-            ?: throw UnsupportedBookException()
+        try {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                tmp.outputStream().use { CappedInputStream(input, Limits.MAX_BOOK_BYTES).copyTo(it) }
+            } ?: throw UnsupportedBookException()
+        } catch (e: Exception) {
+            tmp.delete()
+            throw e
+        }
         val format = BookOpener.detect(tmp) ?: run {
             tmp.delete()
             throw UnsupportedBookException()
@@ -70,6 +76,7 @@ class Library(private val context: Context) {
         file(entry).delete()
         cover(entry)?.delete()
         Prefs(context).forget(entry.id)
+        ReaderDb.get(context).forgetBook(entry.id)
         write(read().filter { it.id != entry.id })
     }
 

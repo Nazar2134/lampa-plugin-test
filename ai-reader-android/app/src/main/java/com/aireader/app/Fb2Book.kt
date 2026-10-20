@@ -30,9 +30,10 @@ class Fb2Book(file: File, zipped: Boolean, fallbackTitle: String) : BookContent 
             ZipFile(file).use { zip ->
                 val entry = zip.entries().asSequence().firstOrNull { it.name.lowercase().endsWith(".fb2") }
                     ?: throw IOException("No .fb2 inside the archive")
-                zip.getInputStream(entry).use { convert(it) }
+                CappedInputStream(zip.getInputStream(entry), Limits.MAX_FB2_BYTES).buffered().use { convert(it) }
             }
         } else {
+            if (file.length() > Limits.MAX_FB2_BYTES) throw BookTooLargeException()
             file.inputStream().buffered().use { convert(it) }
         }
         if (chapters.isEmpty()) throw IOException("FB2 has no text")

@@ -40,7 +40,7 @@ class DeepSeekTest {
         val text = StringBuilder()
         val outcome = DeepSeek.stream("sk-test", DeepSeek.MODEL_FLASH, "SYSTEM", listOf(Turn(true, "Q1"), Turn(false, "A1"), Turn(true, "Q2")), {}) { text.append(it) }
 
-        assertEquals(AiOutcome.FINISHED, outcome)
+        assertEquals(AiOutcome.FINISHED, outcome.outcome)
         assertEquals("Привіт, світе", text.toString())
         assertEquals("POST /chat/completions HTTP/1.1", server.last.line)
         assertEquals("Bearer sk-test", server.last.headers["authorization"])
@@ -68,9 +68,9 @@ class DeepSeekTest {
     @Test
     fun reportsLengthAndFilter() {
         server.fallback = MockServer.Response(200, sse(chunk("x", finish = "length"), "[DONE]"))
-        assertEquals(AiOutcome.TRUNCATED, DeepSeek.stream("k", "m", "s", listOf(Turn(true, "q")), {}) {})
+        assertEquals(AiOutcome.TRUNCATED, DeepSeek.stream("k", "m", "s", listOf(Turn(true, "q")), {}) {}.outcome)
         server.fallback = MockServer.Response(200, sse(chunk("", finish = "content_filter"), "[DONE]"))
-        assertEquals(AiOutcome.BLOCKED, DeepSeek.stream("k", "m", "s", listOf(Turn(true, "q")), {}) {})
+        assertEquals(AiOutcome.BLOCKED, DeepSeek.stream("k", "m", "s", listOf(Turn(true, "q")), {}) {}.outcome)
     }
 
     @Test

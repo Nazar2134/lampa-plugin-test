@@ -11,8 +11,8 @@ android {
         applicationId = "com.aireader.app"
         minSdk = 30
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 3
+        versionName = "1.2"
     }
 
     buildTypes {
@@ -20,6 +20,18 @@ android {
             isMinifyEnabled = false
             // Sideloaded personal app: sign release builds with the local debug key.
             signingConfig = signingConfigs.getByName("debug")
+        }
+    }
+
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+            all {
+                // Robolectric downloads its Android runtime; use the same Maven Central mirror as the build.
+                it.systemProperty("robolectric.dependency.repo.url", "https://maven-central.storage-download.googleapis.com/maven2")
+                it.systemProperty("robolectric.graphicsMode", "NATIVE")
+                it.maxHeapSize = "2g"
+            }
         }
     }
 
@@ -40,4 +52,6 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("net.sf.kxml:kxml2:2.3.0")
     testImplementation("org.json:json:20240303")
+    // Android framework (SQLite, preferences, views) on the JVM, for persistence tests and screenshots.
+    testImplementation("org.robolectric:robolectric:4.17")
 }

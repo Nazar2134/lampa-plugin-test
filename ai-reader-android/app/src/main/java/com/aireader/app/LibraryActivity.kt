@@ -39,6 +39,7 @@ class LibraryActivity : Activity() {
         findViewById<View>(R.id.add).setOnClickListener { pickBook() }
         findViewById<View>(R.id.openBook).setOnClickListener { pickBook() }
         findViewById<View>(R.id.settings).setOnClickListener { startActivity(Intent(this, SettingsActivity::class.java)) }
+        findViewById<View>(R.id.vocabulary).setOnClickListener { startActivity(Intent(this, VocabularyActivity::class.java)) }
 
         list.adapter = adapter
         list.setOnItemClickListener { _, _, position, _ -> open(books[position]) }
@@ -46,7 +47,7 @@ class LibraryActivity : Activity() {
             val book = books[position]
             AlertDialog.Builder(this)
                 .setTitle(book.title)
-                .setMessage("Remove this book from the library?")
+                .setMessage("Remove this book from the library? Its bookmarks, highlights and notes are deleted too. Saved words stay in your vocabulary.")
                 .setPositiveButton("Remove") { _, _ ->
                     library.remove(book)
                     refresh()
@@ -100,7 +101,11 @@ class LibraryActivity : Activity() {
             runOnUiThread {
                 importing.visibility = View.GONE
                 result.onSuccess { open(it) }.onFailure {
-                    val message = if (it is UnsupportedBookException) "This file isn't an EPUB or FB2 book." else "Couldn't add this book: ${it.message}"
+                    val message = when (it) {
+                        is UnsupportedBookException -> "This file isn't an EPUB or FB2 book, or it is damaged."
+                        is BookTooLargeException -> "This book is too large (the limit is 200 MB)."
+                        else -> "Couldn't add this book: ${it.message}"
+                    }
                     Toast.makeText(this, message, Toast.LENGTH_LONG).show()
                 }
                 refresh()

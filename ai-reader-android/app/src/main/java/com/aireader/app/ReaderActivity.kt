@@ -6,11 +6,15 @@ import android.app.AlertDialog
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.res.ColorStateList
+import android.content.res.Configuration
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
+import android.text.InputType
+import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
@@ -19,29 +23,36 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
+import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
 import java.io.ByteArrayInputStream
 import kotlin.concurrent.thread
 
-class ReaderActivity : Activity() {
+class ReaderActivity : Activity(), AiHost {
     private lateinit var prefs: Prefs
-    private lateinit var settings: AppSettings
-    private lateinit var bookId: String
-    @Volatile private var book: BookContent? = null
+    private lateinit var db: ReaderDb
+    @Volatile private var settings = AppSettings()
+    override lateinit var bookId: String
+    @Volatile private var session: BookSession.Session? = null
+    private val book get() = session?.book
     @Volatile private var pendingInit = "{}"
     @Volatile private var layout = ChapterRenderer.Layout(48, 40, 22)
 
     private var chapter = 0
     private var page = 0
     private var pageCount = 1
-    /** Positions to return to after following a link, e.g. a footnote. */
-    private val jumps = ArrayDeque<Pair<Int, Float>>()
+    private var pageAnchor: JSONObject? = null
+    private var currentBookmark = 0L
+    /** Positions to return to with Back after following a link or jumping from the contents screen. */
+    private val jumps = ArrayDeque<ReadingPosition>()
 
     private lateinit var root: View
     private lateinit var web: ReaderWebView
@@ -49,8 +60,8 @@ class ReaderActivity : Activity() {
     private lateinit var bookTitle: TextView
     private lateinit var status: TextView
     private lateinit var stylePanel: LinearLayout
-    private lateinit var fontSizeLabel: TextView
     private lateinit var loading: ProgressBar
+    private lateinit var bookmarkButton: ImageButton
     private lateinit var ai: AiPanel
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -62,6 +73,7 @@ class ReaderActivity : Activity() {
         }
 
         prefs = Prefs(this)
+        db = ReaderDb.get(this)
         settings = prefs.load()
         val library = Library(this)
         val entry = intent.getStringExtra(EXTRA_BOOK_ID)?.let { library.get(it) }
@@ -77,9 +89,9 @@ class ReaderActivity : Activity() {
         bookTitle = findViewById(R.id.bookTitle)
         status = findViewById(R.id.status)
         stylePanel = findViewById(R.id.stylePanel)
-        fontSizeLabel = findViewById(R.id.fontSizeLabel)
         loading = findViewById(R.id.loading)
-        ai = AiPanel(this) { bookInfo() }
+        bookmarkButton = findViewById(R.id.bookmark)
+        ai = AiPanel(this, this)
         bookTitle.text = entry.title
 
         topBar.setOnApplyWindowInsetsListener { v, insets ->
@@ -93,20 +105,25 @@ class ReaderActivity : Activity() {
         setBarsVisible(false)
 
         thread {
-            val opened = runCatching { BookOpener.open(library.file(entry), entry.title) }
+            val opened = runCatching { BookSession.open(bookId, library.file(entry), entry.title) }
             runOnUiThread {
                 loading.visibility = View.GONE
-                opened.onSuccess { b ->
-                    if (isDestroyed) {
-                        b.close()
-                        return@onSuccess
-                    }
-                    book = b
+                opened.onSuccess { s ->
+                    if (isDestroyed) return@onSuccess
+                    session = s
                     prefs.markOpened(bookId)
-                    val (c, fraction) = prefs.position(bookId)
-                    openChapter(c.coerceIn(0, b.chapterCount - 1), fraction)
+                    val position = intent.getIntExtra(EXTRA_CHAPTER, -1).takeIf { it >= 0 }
+                        ?.let { ReadingPosition(it, 0f) } ?: prefs.position(bookId)
+                    val target = intent.getStringExtra(EXTRA_TARGET)?.let { runCatching { JSONObject(it) }.getOrNull() }
+                    openChapter(position.chapter.coerceIn(0, s.book.chapterCount - 1), position, target = target)
+                    // Text and index for search, progress and AI context; built once per book session.
+                    thread(isDaemon = true) {
+                        runCatching { s.prepare() }
+                        runOnUiThread { if (!isDestroyed) updateStatus() }
+                    }
                 }.onFailure {
-                    Toast.makeText(this, "Couldn't open this book: ${it.message}", Toast.LENGTH_LONG).show()
+                    val message = if (it is BookTooLargeException) "This book is too large to open." else "Couldn't open this book: ${it.message}"
+                    Toast.makeText(this, message, Toast.LENGTH_LONG).show()
                     finish()
                 }
             }
@@ -114,9 +131,25 @@ class ReaderActivity : Activity() {
     }
 
     override fun onDestroy() {
-        book?.close()
+        if (::bookId.isInitialized && !isChangingConfigurations) BookSession.close(bookId)
         super.onDestroy()
     }
+
+    override fun onResume() {
+        super.onResume()
+        // Settings may have changed (language, provider); reading style changes reload the page.
+        val fresh = prefs.load()
+        val styleChanged = fresh.copy(provider = settings.provider, geminiKey = settings.geminiKey, geminiModel = settings.geminiModel,
+            deepseekKey = settings.deepseekKey, deepseekModel = settings.deepseekModel, language = settings.language,
+            detailed = settings.detailed, cefr = settings.cefr) != settings
+        settings = fresh
+        if (styleChanged && session != null) {
+            applyTheme()
+            reload()
+        }
+    }
+
+    // --- Web view and book files ---
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun setUpWebView() {
@@ -124,18 +157,22 @@ class ReaderActivity : Activity() {
             javaScriptEnabled = true
             allowFileAccess = false
             allowContentAccess = false
+            domStorageEnabled = false
             textZoom = 100
             setSupportZoom(false)
             builtInZoomControls = false
+            setGeolocationEnabled(false)
+            mediaPlaybackRequiresUserGesture = true
         }
         web.isVerticalScrollBarEnabled = false
         web.isHorizontalScrollBarEnabled = false
         web.overScrollMode = View.OVER_SCROLL_NEVER
         web.addJavascriptInterface(Bridge(), "Android")
         web.webViewClient = object : WebViewClient() {
-            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse {
                 val url = request.url
-                if (url.host != Paths.HOST) return null
+                // Book content may only load files from the book itself.
+                if (url.host != Paths.HOST || url.scheme != "https") return blocked()
                 return serve(Paths.decode(url.encodedPath.orEmpty().removePrefix("/")))
             }
 
@@ -145,51 +182,95 @@ class ReaderActivity : Activity() {
                 return true
             }
         }
-        web.onAiAction = { action -> askAboutSelection(action) }
+        web.onSelectionAction = { action -> onSelectionAction(action) }
     }
 
     private fun serve(path: String): WebResourceResponse {
         if (path.startsWith("__reader/")) {
             val name = path.removePrefix("__reader/")
-            return runCatching {
-                WebResourceResponse(Paths.mime(name), "utf-8", assets.open("reader/$name"))
-            }.getOrElse { notFound() }
+            if ("/" in name || name.startsWith(".")) return blocked()
+            return runCatching { WebResourceResponse(Paths.mime(name), "utf-8", assets.open("reader/$name")) }.getOrElse { notFound() }
         }
-        val resource = book?.load(path) ?: return notFound()
+        val b = book ?: return notFound()
+        val resource = runCatching { b.load(path) }.getOrNull() ?: return notFound()
         if (!resource.isChapter) return WebResourceResponse(resource.mime, null, ByteArrayInputStream(resource.bytes))
-        val head = ChapterRenderer.head(settings, layout, pendingInit)
-        val html = ChapterRenderer.prepare(String(resource.bytes, Charsets.UTF_8), head)
-        return WebResourceResponse("text/html", "utf-8", ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)))
+        val index = b.chapterIndexForPath(path) ?: chapter
+        val init = JSONObject(pendingInit).put("marks", marksJson(index))
+        val nonce = ChapterRenderer.newNonce()
+        val html = ChapterRenderer.prepare(String(resource.bytes, Charsets.UTF_8), ChapterRenderer.head(settings, layout, init.toString(), nonce), nonce)
+        return WebResourceResponse(
+            "text/html", "utf-8", 200, "OK",
+            mapOf("Content-Security-Policy" to ChapterRenderer.contentSecurityPolicy(nonce), "Cache-Control" to "no-store"),
+            ByteArrayInputStream(html.toByteArray(Charsets.UTF_8)),
+        )
     }
 
     private fun notFound() = WebResourceResponse("text/plain", "utf-8", 404, "Not Found", emptyMap(), ByteArrayInputStream(ByteArray(0)))
+    private fun blocked() = WebResourceResponse("text/plain", "utf-8", 403, "Blocked", emptyMap(), ByteArrayInputStream(ByteArray(0)))
 
-    private fun openChapter(index: Int, fraction: Float = 0f, atEnd: Boolean = false, anchor: String? = null) {
+    private fun marksJson(chapter: Int): JSONObject {
+        val highlights = JSONArray()
+        for (h in db.highlights(bookId, chapter)) {
+            highlights.put(JSONObject().put("id", h.id).put("text", h.text).put("occurrence", h.occurrence).put("color", h.color).put("note", h.note.isNotBlank()))
+        }
+        val bookmarks = JSONArray()
+        for (b in db.bookmarks(bookId, chapter)) bookmarks.put(JSONObject().put("id", b.id).put("text", b.anchorText).put("occurrence", b.anchorOccurrence))
+        return JSONObject().put("highlights", highlights).put("bookmarks", bookmarks)
+    }
+
+    private fun refreshMarks() {
+        val json = marksJson(chapter).toString()
+        web.evaluateJavascript("window.reader && reader.setMarks(${JSONObject.quote(json)})", null)
+    }
+
+    // --- Navigation ---
+
+    private fun openChapter(index: Int, position: ReadingPosition? = null, atEnd: Boolean = false, target: JSONObject? = null) {
         val b = book ?: return
-        chapter = index
+        chapter = index.coerceIn(0, b.chapterCount - 1)
         page = 0
         pageCount = 1
+        pageAnchor = null
+        currentBookmark = 0
         layout = computeLayout()
-        pendingInit = JSONObject()
-            .put("fraction", fraction.toDouble())
-            .put("atEnd", atEnd)
-            .put("anchor", anchor ?: JSONObject.NULL)
-            .toString()
-        web.loadUrl(b.chapterUrl(index))
+        val init = JSONObject().put("atEnd", atEnd)
+        if (position != null && position.chapter == chapter) {
+            init.put("position", JSONObject().put("fraction", position.fraction.toDouble()).put("text", position.anchorText).put("occurrence", position.anchorOccurrence))
+        }
+        if (target != null) init.put("target", target)
+        pendingInit = init.toString()
+        web.loadUrl(b.chapterUrl(chapter))
         updateStatus()
     }
 
-    /** Page margins in CSS pixels, keeping text clear of the camera cutout and the status line. */
+    private fun currentPosition() = ReadingPosition(
+        chapter, if (pageCount > 0) page.toFloat() / pageCount else 0f,
+        pageAnchor?.optString("text").orEmpty(), pageAnchor?.optInt("occurrence") ?: 0,
+    )
+
+    private fun reload() = openChapter(chapter, currentPosition())
+
+    /**
+     * Page margins in CSS pixels: text clears the camera cutout and the status line, lines stay a comfortable
+     * length on tablets, and wide screens get two columns.
+     */
     private fun computeLayout(): ChapterRenderer.Layout {
         val density = resources.displayMetrics.density
         val insets = window.decorView.rootWindowInsets
         val top = insets?.getInsetsIgnoringVisibility(WindowInsets.Type.statusBars() or WindowInsets.Type.displayCutout())?.top ?: 0
-        return ChapterRenderer.Layout(padTop = (top / density).toInt() + 14, padBottom = 40, padX = 22)
+        val width = resources.configuration.screenWidthDp
+        val columns = if (width >= 840) 2 else 1
+        var padX = settings.margin.px
+        if (columns == 1 && width > 720) padX = maxOf(padX, (width - 680) / 2)
+        if (columns == 2) padX = maxOf(padX, 32)
+        return ChapterRenderer.Layout(padTop = (top / density).toInt() + 14, padBottom = 40, padX = padX, columns = columns)
     }
 
-    private fun currentFraction() = if (pageCount > 0) page.toFloat() / pageCount else 0f
-
-    private fun reload() = openChapter(chapter, currentFraction())
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (session != null && computeLayout() != layout) reload()
+        if (stylePanel.visibility == View.VISIBLE) placeStylePanel()
+    }
 
     private fun openLink(href: String) {
         val b = book ?: return
@@ -202,13 +283,15 @@ class ReaderActivity : Activity() {
             val path = Paths.decode(uri.encodedPath.orEmpty().removePrefix("/"))
             (b.chapterIndexForPath(path) ?: return) to uri.fragment
         }
-        jumps.addLast(chapter to currentFraction())
-        openChapter(target.first, anchor = target.second)
+        jumps.addLast(currentPosition())
+        openChapter(target.first, target = target.second?.let { JSONObject().put("id", it) })
     }
 
     private fun openExternal(url: String) {
+        val uri = Uri.parse(url)
+        if (uri.scheme != "https" && uri.scheme != "http" && uri.scheme != "mailto") return
         try {
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            startActivity(Intent(Intent.ACTION_VIEW, uri))
         } catch (e: ActivityNotFoundException) {
             Toast.makeText(this, "No app can open this link", Toast.LENGTH_SHORT).show()
         }
@@ -216,21 +299,42 @@ class ReaderActivity : Activity() {
 
     private fun updateStatus() {
         val b = book ?: return
-        val percent = ((chapter + currentFraction()) / b.chapterCount * 100).toInt()
+        val fraction = if (pageCount > 0) page.toFloat() / pageCount else 0f
+        val percent = (progress(fraction) * 100).toInt()
         status.text = "${b.chapterTitle(chapter)}  ·  ${page + 1} / $pageCount  ·  $percent%"
+        bookmarkButton.setImageResource(if (currentBookmark != 0L) R.drawable.ic_bookmark_filled else R.drawable.ic_bookmark)
+        bookmarkButton.contentDescription = if (currentBookmark != 0L) "Remove bookmark" else "Bookmark this page"
+    }
+
+    /** Progress through the whole book, weighted by chapter length once the text has been read. */
+    private fun progress(fraction: Float): Float {
+        val b = book ?: return 0f
+        return session?.text?.progress(chapter, fraction) ?: ((chapter + fraction) / b.chapterCount)
     }
 
     private fun savePosition() {
-        val b = book ?: return
-        prefs.setPosition(bookId, chapter, currentFraction(), (chapter + currentFraction()) / b.chapterCount)
+        if (book == null) return
+        val position = currentPosition()
+        prefs.setPosition(bookId, position, progress(position.fraction))
     }
 
-    private fun bookInfo(): BookInfo {
+    // --- AiHost ---
+
+    override fun session() = session
+
+    override fun location(): Pair<Int, Float> = chapter to if (pageCount > 0) (page + 1f) / pageCount else 1f
+
+    override fun bookInfo(): BookInfo {
         val b = book
-        return BookInfo(b?.title ?: bookTitle.text.toString(), b?.author.orEmpty(), b?.languageName)
+        return BookInfo(
+            b?.title ?: bookTitle.text.toString(), b?.author.orEmpty(), b?.languageName,
+            b?.let { "chapter ${chapter + 1} of ${it.chapterCount} (“${it.chapterTitle(chapter)}”)" },
+        )
     }
 
-    private fun askAboutSelection(action: AiAction) {
+    // --- Selection, highlights, bookmarks ---
+
+    private fun withSelection(block: (Selection) -> Unit) {
         web.evaluateJavascript("reader.selectionInfo()") { result ->
             val info = runCatching { JSONObject(JSONTokener(result).nextValue() as String) }.getOrNull()
             val text = info?.optString("text").orEmpty().trim()
@@ -239,12 +343,34 @@ class ReaderActivity : Activity() {
                 return@evaluateJavascript
             }
             web.evaluateJavascript("reader.clearSelection()", null)
-            setBarsVisible(false)
-            ai.openForSelection(action, text, info?.optString("context").orEmpty())
+            val anchor = info?.optJSONObject("anchor")
+            block(Selection(text, info?.optString("context").orEmpty(), info?.optString("sentence").orEmpty(), chapter, anchor?.optInt("occurrence") ?: 0))
         }
     }
 
-    private fun askAboutPage() {
+    private fun onSelectionAction(action: SelectionAction) = withSelection { sel ->
+        when (action) {
+            SelectionAction.EXPLAIN -> openAi(AiAction.EXPLAIN, sel)
+            SelectionAction.TRANSLATE -> openAi(AiAction.TRANSLATE, sel)
+            SelectionAction.ASK -> openAi(AiAction.ASK, sel)
+            SelectionAction.HIGHLIGHT -> {
+                val id = db.addHighlight(Highlight(bookId = bookId, chapter = chapter, text = sel.text, occurrence = sel.occurrence))
+                refreshMarks()
+                Toast.makeText(this, "Highlighted. Tap it to add a note.", Toast.LENGTH_SHORT).show()
+                if (id < 0) Toast.makeText(this, "Couldn't save the highlight", Toast.LENGTH_SHORT).show()
+            }
+            SelectionAction.SAVE_WORD -> Vocabulary.save(
+                this, WordSource(sel.text, sel.sentence, bookId, bookInfo().title, chapter, book?.chapterTitle(chapter).orEmpty(), sel.occurrence),
+            )
+        }
+    }
+
+    private fun openAi(action: AiAction, sel: Selection) {
+        setBarsVisible(false)
+        ai.openForSelection(action, sel)
+    }
+
+    private fun askAboutBook() {
         web.evaluateJavascript("reader.pageText()") { result ->
             val text = runCatching { JSONTokener(result).nextValue() as? String }.getOrNull().orEmpty()
             setBarsVisible(false)
@@ -252,29 +378,127 @@ class ReaderActivity : Activity() {
         }
     }
 
+    private fun toggleBookmark() {
+        if (book == null) return
+        if (currentBookmark != 0L) {
+            db.deleteBookmark(currentBookmark)
+            currentBookmark = 0
+            Toast.makeText(this, "Bookmark removed", Toast.LENGTH_SHORT).show()
+        } else {
+            val position = currentPosition()
+            val label = position.anchorText.ifBlank { book?.chapterTitle(chapter).orEmpty() }
+            db.addBookmark(Bookmark(bookId = bookId, chapter = chapter, fraction = position.fraction, anchorText = position.anchorText,
+                anchorOccurrence = position.anchorOccurrence, label = label))
+            Toast.makeText(this, "Page bookmarked", Toast.LENGTH_SHORT).show()
+        }
+        refreshMarks()
+        updateStatus()
+    }
+
+    private fun editHighlight(id: Long) {
+        val h = db.highlight(id) ?: return
+        val pad = (20 * resources.displayMetrics.density).toInt()
+        var color = h.color
+        val note = EditText(this).apply {
+            setText(h.note)
+            hint = "Add a note"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            minLines = 2
+        }
+        val swatches = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        val colorValues = mapOf("yellow" to 0xFFF2C94C.toInt(), "green" to 0xFF6FCF97.toInt(), "blue" to 0xFF56A0F5.toInt(), "pink" to 0xFFF27AA8.toInt())
+        fun paint() {
+            for (i in 0 until swatches.childCount) {
+                val v = swatches.getChildAt(i)
+                v.background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(colorValues.getValue(v.tag as String))
+                    if (v.tag == color) setStroke(pad / 6, settings.theme.fg)
+                }
+            }
+        }
+        for ((name, _) in colorValues) {
+            swatches.addView(View(this).apply {
+                tag = name
+                contentDescription = "$name highlight"
+                setOnClickListener { color = name; paint() }
+            }, LinearLayout.LayoutParams(pad * 2, pad * 2).apply { marginEnd = pad / 2 })
+        }
+        paint()
+        val quote = TextView(this).apply {
+            text = "“${h.text.take(300)}”"
+            setPadding(0, 0, 0, pad / 2)
+            maxLines = 4
+        }
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad / 2, pad, 0)
+            addView(quote)
+            addView(swatches)
+            addView(note, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = pad / 2 })
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Highlight")
+            .setView(content)
+            .setPositiveButton("Save") { _, _ ->
+                db.updateHighlight(id, color, note.text.toString().trim())
+                refreshMarks()
+            }
+            .setNegativeButton("Delete") { _, _ ->
+                db.deleteHighlight(id)
+                refreshMarks()
+            }
+            .setNeutralButton("Explain") { _, _ -> openAi(AiAction.EXPLAIN, Selection(h.text, "", h.text, h.chapter, h.occurrence)) }
+            .show()
+    }
+
     // --- Toolbar, style panel, theme ---
 
     private fun setUpBars() {
         findViewById<ImageButton>(R.id.back).setOnClickListener { finish() }
-        findViewById<ImageButton>(R.id.toc).setOnClickListener { showToc() }
+        findViewById<ImageButton>(R.id.toc).setOnClickListener { openNavigator() }
         findViewById<View>(R.id.style).setOnClickListener {
-            stylePanel.visibility = if (stylePanel.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+            if (stylePanel.visibility == View.VISIBLE) stylePanel.visibility = View.GONE else {
+                placeStylePanel()
+                stylePanel.visibility = View.VISIBLE
+            }
         }
-        findViewById<ImageButton>(R.id.askAi).setOnClickListener { askAboutPage() }
+        findViewById<ImageButton>(R.id.askAi).setOnClickListener { askAboutBook() }
+        bookmarkButton.setOnClickListener { toggleBookmark() }
 
-        findViewById<View>(R.id.fontSmaller).setOnClickListener { changeStyle(settings.copy(fontSize = (settings.fontSize - 1).coerceAtLeast(12))) }
-        findViewById<View>(R.id.fontBigger).setOnClickListener { changeStyle(settings.copy(fontSize = (settings.fontSize + 1).coerceAtMost(34))) }
-        findViewById<View>(R.id.fontSerif).setOnClickListener { changeStyle(settings.copy(serif = true)) }
-        findViewById<View>(R.id.fontSans).setOnClickListener { changeStyle(settings.copy(serif = false)) }
-        findViewById<View>(R.id.themeLight).setOnClickListener { changeStyle(settings.copy(theme = ReaderTheme.LIGHT)) }
-        findViewById<View>(R.id.themeSepia).setOnClickListener { changeStyle(settings.copy(theme = ReaderTheme.SEPIA)) }
-        findViewById<View>(R.id.themeDark).setOnClickListener { changeStyle(settings.copy(theme = ReaderTheme.DARK)) }
+        val s = { update: (AppSettings) -> AppSettings -> changeStyle(update(settings)) }
+        findViewById<View>(R.id.fontSmaller).setOnClickListener { s { it.copy(fontSize = (it.fontSize - 1).coerceAtLeast(12)) } }
+        findViewById<View>(R.id.fontBigger).setOnClickListener { s { it.copy(fontSize = (it.fontSize + 1).coerceAtMost(34)) } }
+        findViewById<View>(R.id.fontSerif).setOnClickListener { s { it.copy(font = ReaderFont.SERIF) } }
+        findViewById<View>(R.id.fontSans).setOnClickListener { s { it.copy(font = ReaderFont.SANS) } }
+        findViewById<View>(R.id.fontPublisher).setOnClickListener { s { it.copy(font = ReaderFont.PUBLISHER) } }
+        findViewById<View>(R.id.spacingLess).setOnClickListener { s { it.copy(lineHeight = ((it.lineHeight * 20 - 1) / 20).coerceAtLeast(1.2f)) } }
+        findViewById<View>(R.id.spacingMore).setOnClickListener { s { it.copy(lineHeight = ((it.lineHeight * 20 + 1) / 20).coerceAtMost(2.2f)) } }
+        findViewById<View>(R.id.marginNarrow).setOnClickListener { s { it.copy(margin = ReaderMargin.NARROW) } }
+        findViewById<View>(R.id.marginNormal).setOnClickListener { s { it.copy(margin = ReaderMargin.NORMAL) } }
+        findViewById<View>(R.id.marginWide).setOnClickListener { s { it.copy(margin = ReaderMargin.WIDE) } }
+        findViewById<View>(R.id.alignJustify).setOnClickListener { s { it.copy(justify = true) } }
+        findViewById<View>(R.id.alignLeft).setOnClickListener { s { it.copy(justify = false) } }
+        findViewById<View>(R.id.themeLight).setOnClickListener { s { it.copy(theme = ReaderTheme.LIGHT) } }
+        findViewById<View>(R.id.themeSepia).setOnClickListener { s { it.copy(theme = ReaderTheme.SEPIA) } }
+        findViewById<View>(R.id.themeDark).setOnClickListener { s { it.copy(theme = ReaderTheme.DARK) } }
+    }
+
+    private fun placeStylePanel() {
+        topBar.post {
+            val params = stylePanel.layoutParams as FrameLayout.LayoutParams
+            params.topMargin = topBar.bottom + (8 * resources.displayMetrics.density).toInt()
+            stylePanel.layoutParams = params
+        }
     }
 
     private fun changeStyle(updated: AppSettings) {
         if (updated == settings) return
         // Keep the AI settings from disk; only the reading style changes here.
-        settings = prefs.load().copy(fontSize = updated.fontSize, serif = updated.serif, theme = updated.theme)
+        settings = prefs.load().copy(
+            fontSize = updated.fontSize, font = updated.font, lineHeight = updated.lineHeight,
+            margin = updated.margin, justify = updated.justify, theme = updated.theme,
+        )
         prefs.save(settings)
         applyTheme()
         reload()
@@ -289,21 +513,39 @@ class ReaderActivity : Activity() {
         status.setTextColor(t.muted)
         bookTitle.setTextColor(t.fg)
         loading.indeterminateTintList = ColorStateList.valueOf(t.accent)
-        for (id in listOf(R.id.back, R.id.toc, R.id.askAi)) findViewById<ImageButton>(id).imageTintList = ColorStateList.valueOf(t.fg)
+        for (id in listOf(R.id.back, R.id.toc, R.id.askAi, R.id.bookmark)) findViewById<ImageButton>(id).imageTintList = ColorStateList.valueOf(t.fg)
         findViewById<TextView>(R.id.style).setTextColor(t.fg)
         stylePanel.background = GradientDrawable().apply {
             setColor(t.bg)
             cornerRadius = 16 * density
             setStroke((1 * density).toInt(), (t.muted and 0x00FFFFFF) or 0x50000000)
         }
-        fontSizeLabel.text = "${settings.fontSize}"
-        fontSizeLabel.setTextColor(t.fg)
-        for ((id, selected) in listOf(R.id.fontSerif to settings.serif, R.id.fontSans to !settings.serif, R.id.fontSmaller to false, R.id.fontBigger to false)) {
-            findViewById<TextView>(id).setTextColor(if (selected) t.accent else t.fg)
+        findViewById<TextView>(R.id.fontSizeLabel).text = "${settings.fontSize}"
+        findViewById<TextView>(R.id.spacingLabel).text = "%.2f".format(settings.lineHeight).trimEnd('0').trimEnd('.')
+        val selected = mapOf(
+            R.id.fontSerif to (settings.font == ReaderFont.SERIF), R.id.fontSans to (settings.font == ReaderFont.SANS),
+            R.id.fontPublisher to (settings.font == ReaderFont.PUBLISHER),
+            R.id.marginNarrow to (settings.margin == ReaderMargin.NARROW), R.id.marginNormal to (settings.margin == ReaderMargin.NORMAL),
+            R.id.marginWide to (settings.margin == ReaderMargin.WIDE),
+            R.id.alignJustify to settings.justify, R.id.alignLeft to !settings.justify,
+            R.id.fontSmaller to false, R.id.fontBigger to false, R.id.spacingLess to false, R.id.spacingMore to false,
+            R.id.fontSizeLabel to false, R.id.spacingLabel to false,
+        )
+        for ((id, on) in selected) findViewById<TextView>(id).apply {
+            setTextColor(if (on) t.accent else t.fg)
+            if (id != R.id.fontSizeLabel && id != R.id.spacingLabel) background = GradientDrawable().apply {
+                cornerRadius = 10 * density
+                setColor(if (on) (t.accent and 0x00FFFFFF) or 0x22000000 else 0)
+            }
+            isSelected = on
+        }
+        for (i in 0 until stylePanel.childCount) {
+            ((stylePanel.getChildAt(i) as LinearLayout).getChildAt(0) as TextView).setTextColor(t.muted)
         }
         for ((id, theme) in listOf(R.id.themeLight to ReaderTheme.LIGHT, R.id.themeSepia to ReaderTheme.SEPIA, R.id.themeDark to ReaderTheme.DARK)) {
             findViewById<TextView>(id).apply {
                 setTextColor(theme.fg)
+                isSelected = theme == t
                 background = GradientDrawable().apply {
                     setColor(theme.bg)
                     cornerRadius = 10 * density
@@ -328,31 +570,39 @@ class ReaderActivity : Activity() {
         }
     }
 
-    private fun showToc() {
-        val b = book ?: return
-        val entries = b.toc.ifEmpty { (0 until b.chapterCount).map { TocEntry(b.chapterTitle(it), it, null) } }
-        if (entries.isEmpty()) return
-        val labels = entries.map { "    ".repeat(it.depth.coerceAtMost(3)) + it.title }.toTypedArray()
-        val current = entries.indexOfLast { it.chapter <= chapter }
-        AlertDialog.Builder(this)
-            .setTitle("Contents")
-            .setSingleChoiceItems(labels, current) { dialog, which ->
-                dialog.dismiss()
-                setBarsVisible(false)
-                jumps.clear()
-                openChapter(entries[which].chapter, anchor = entries[which].anchor)
-            }
-            .show()
+    private fun openNavigator() {
+        if (book == null) return
+        setBarsVisible(false)
+        @Suppress("DEPRECATION")
+        startActivityForResult(
+            Intent(this, NavigatorActivity::class.java).putExtra(NavigatorActivity.EXTRA_BOOK_ID, bookId).putExtra(NavigatorActivity.EXTRA_CHAPTER, chapter),
+            NAVIGATE,
+        )
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        @Suppress("DEPRECATION")
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != NAVIGATE || resultCode != RESULT_OK || data == null) return
+        val target = data.getStringExtra(EXTRA_TARGET)?.let { runCatching { JSONObject(it) }.getOrNull() }
+        val fraction = data.getFloatExtra(EXTRA_FRACTION, 0f)
+        jumps.addLast(currentPosition())
+        openChapter(data.getIntExtra(EXTRA_CHAPTER, chapter), ReadingPosition(data.getIntExtra(EXTRA_CHAPTER, chapter), fraction), target = target)
     }
 
     // --- Keys and back ---
 
-    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
-        if (!ai.isOpen && (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == KeyEvent.KEYCODE_VOLUME_UP)) {
-            web.evaluateJavascript(if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) "reader.next()" else "reader.prev()", null)
-            return true
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (ai.isOpen || currentFocus is EditText) return super.dispatchKeyEvent(event)
+        val forward = when (event.keyCode) {
+            KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_PAGE_DOWN -> true
+            KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_PAGE_UP -> false
+            KeyEvent.KEYCODE_SPACE -> !event.isShiftPressed
+            else -> return super.dispatchKeyEvent(event)
         }
-        return super.onKeyDown(keyCode, event)
+        if (event.action == KeyEvent.ACTION_DOWN) web.evaluateJavascript(if (forward) "reader.next()" else "reader.prev()", null)
+        return true
     }
 
     @Deprecated("Deprecated in Java")
@@ -360,7 +610,7 @@ class ReaderActivity : Activity() {
         when {
             ai.isOpen -> ai.close()
             stylePanel.visibility == View.VISIBLE -> stylePanel.visibility = View.GONE
-            jumps.isNotEmpty() -> jumps.removeLast().let { (c, f) -> openChapter(c, f) }
+            jumps.isNotEmpty() -> jumps.removeLast().let { openChapter(it.chapter, it) }
             else -> @Suppress("DEPRECATION") super.onBackPressed()
         }
     }
@@ -368,9 +618,11 @@ class ReaderActivity : Activity() {
     /** Called from reader.js, on a background thread. */
     private inner class Bridge {
         @JavascriptInterface
-        fun onPage(p: Int, count: Int) = runOnUiThread {
+        fun onPage(p: Int, count: Int, anchor: String, bookmark: Long) = runOnUiThread {
             page = p
             pageCount = count
+            pageAnchor = anchor.takeIf { it.isNotEmpty() }?.let { runCatching { JSONObject(it) }.getOrNull() }
+            currentBookmark = bookmark
             savePosition()
             updateStatus()
         }
@@ -383,6 +635,9 @@ class ReaderActivity : Activity() {
                 else -> setBarsVisible(topBar.visibility != View.VISIBLE)
             }
         }
+
+        @JavascriptInterface
+        fun onHighlightTap(id: Long) = runOnUiThread { editHighlight(id) }
 
         @JavascriptInterface
         fun nextChapter() = runOnUiThread {
@@ -403,5 +658,9 @@ class ReaderActivity : Activity() {
 
     companion object {
         const val EXTRA_BOOK_ID = "book_id"
+        const val EXTRA_CHAPTER = "chapter"
+        const val EXTRA_TARGET = "target"
+        const val EXTRA_FRACTION = "fraction"
+        private const val NAVIGATE = 2
     }
 }

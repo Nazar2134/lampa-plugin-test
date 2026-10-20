@@ -197,6 +197,29 @@
             android:visibility="gone" />
 
         <TextView
+            android:id="@+id/usage"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:lineSpacingMultiplier="1.2"
+            android:textColor="@color/muted"
+            android:textSize="13sp" />
+
+        <TextView
+            style="@style/SectionLabel"
+            android:layout_marginTop="32dp"
+            android:text="What is sent to the AI"
+            android:textSize="18sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:lineSpacingMultiplier="1.2"
+            android:text="Books stay on your phone. When you use an AI action, only the text you selected, its paragraph, and for questions a few passages found by searching the part of the book you've already read are sent to the provider you chose, along with the book's title and author. Repeated explanations are answered from a local cache."
+            android:textColor="@color/muted"
+            android:textSize="14sp" />
+
+        <TextView
             style="@style/SectionLabel"
             android:layout_marginTop="32dp"
             android:text="Ask Claude / Ask ChatGPT"
