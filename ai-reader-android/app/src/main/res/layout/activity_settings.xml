@@ -58,49 +58,124 @@
         <TextView
             style="@style/SectionLabel"
             android:layout_marginTop="32dp"
-            android:text="Answers inside the reader (free)"
+            android:text="Answers inside the reader"
             android:textSize="18sp" />
 
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:lineSpacingMultiplier="1.2"
-            android:text="Uses Google Gemini's free tier. Get a key at Google AI Studio: sign in with a Google account, tap “Create API key”, and paste it here. No card needed. The free tier has daily limits, and Google may use free-tier requests to improve its models."
-            android:textColor="@color/muted"
-            android:textSize="14sp" />
-
-        <TextView
-            android:id="@+id/getKey"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:paddingVertical="10dp"
-            android:text="Get a free key at aistudio.google.com →"
-            android:textColor="@color/accent"
-            android:textSize="15sp" />
-
-        <EditText
-            android:id="@+id/geminiKey"
-            style="@style/Field"
-            android:hint="Paste your Gemini API key"
-            android:inputType="textPassword"
-            android:singleLine="true" />
-
         <RadioGroup
-            android:id="@+id/model"
+            android:id="@+id/provider"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content">
+
+            <RadioButton
+                android:id="@+id/providerGemini"
+                style="@style/Choice"
+                android:text="Google Gemini: free with a Google account" />
+
+            <RadioButton
+                android:id="@+id/providerDeepseek"
+                style="@style/Choice"
+                android:text="DeepSeek: your API key, pay per use" />
+        </RadioGroup>
+
+        <!-- Gemini -->
+        <LinearLayout
+            android:id="@+id/geminiSection"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="10dp">
+            android:layout_marginTop="12dp"
+            android:orientation="vertical">
 
-            <RadioButton
-                android:id="@+id/modelFlash"
-                style="@style/Choice"
-                android:text="Gemini Flash: better explanations" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:lineSpacingMultiplier="1.2"
+                android:text="Get a key at Google AI Studio: sign in with a Google account, tap “Create API key”, and paste it here. No card needed. The free tier has daily limits, and Google may use free-tier requests to improve its models."
+                android:textColor="@color/muted"
+                android:textSize="14sp" />
 
-            <RadioButton
-                android:id="@+id/modelLite"
-                style="@style/Choice"
-                android:text="Gemini Flash-Lite: faster, more free requests" />
-        </RadioGroup>
+            <TextView
+                android:id="@+id/getGeminiKey"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:paddingVertical="10dp"
+                android:text="Get a free key at aistudio.google.com →"
+                android:textColor="@color/accent"
+                android:textSize="15sp" />
+
+            <EditText
+                android:id="@+id/geminiKey"
+                style="@style/Field"
+                android:hint="Paste your Gemini API key"
+                android:inputType="textPassword"
+                android:singleLine="true" />
+
+            <RadioGroup
+                android:id="@+id/geminiModel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp">
+
+                <RadioButton
+                    android:id="@+id/geminiFlash"
+                    style="@style/Choice"
+                    android:text="Gemini Flash: better explanations" />
+
+                <RadioButton
+                    android:id="@+id/geminiLite"
+                    style="@style/Choice"
+                    android:text="Gemini Flash-Lite: faster, more free requests" />
+            </RadioGroup>
+        </LinearLayout>
+
+        <!-- DeepSeek -->
+        <LinearLayout
+            android:id="@+id/deepseekSection"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:lineSpacingMultiplier="1.2"
+                android:text="Answers are paid from your DeepSeek balance. With Flash, a typical explanation costs well under $0.001."
+                android:textColor="@color/muted"
+                android:textSize="14sp" />
+
+            <TextView
+                android:id="@+id/getDeepseekKey"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:paddingVertical="10dp"
+                android:text="Manage keys at platform.deepseek.com →"
+                android:textColor="@color/accent"
+                android:textSize="15sp" />
+
+            <EditText
+                android:id="@+id/deepseekKey"
+                style="@style/Field"
+                android:hint="Paste your DeepSeek API key (sk-…)"
+                android:inputType="textPassword"
+                android:singleLine="true" />
+
+            <RadioGroup
+                android:id="@+id/deepseekModel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp">
+
+                <RadioButton
+                    android:id="@+id/deepseekFlash"
+                    style="@style/Choice"
+                    android:text="DeepSeek Flash: fast, cheapest" />
+
+                <RadioButton
+                    android:id="@+id/deepseekPro"
+                    style="@style/Choice"
+                    android:text="DeepSeek V4 Pro: thinks first, slower, about 3–4× the price" />
+            </RadioGroup>
+        </LinearLayout>
 
         <Button
             android:id="@+id/check"

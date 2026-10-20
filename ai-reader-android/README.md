@@ -8,8 +8,13 @@ An EPUB and FB2 e-book reader with an AI reading companion built in.
   title, author and language.
 - **✨ button in the toolbar** asks about the page you're on ("who is this
   character?", "what just happened?").
-- **Answers come from Google Gemini's free tier**, using a free key from
-  <https://aistudio.google.com/apikey> (no card needed; it has daily limits).
+- **Answers come from your choice of AI** (Settings → "Answers inside the reader"):
+  - **Google Gemini**, free, with a key from <https://aistudio.google.com/apikey>
+    (no card needed; it has daily limits).
+  - **DeepSeek**, with your own API key from <https://platform.deepseek.com/api_keys>,
+    paid per use from your DeepSeek balance. `deepseek-flash` answers straight away
+    (thinking off) and costs well under $0.001 per explanation; `deepseek-v4-pro`
+    thinks briefly first. "Save and test the key" also shows your balance.
 - **Ask Claude ↗ / Ask ChatGPT ↗** in the panel open those apps (or their
   websites) with the question already written, using your own free account.
 
@@ -36,7 +41,7 @@ echo "sdk.dir=/path/to/android-sdk" > local.properties
 ```
 
 The unit tests parse sample books in `app/src/test/resources`, check the Gemini
-client against a local mock server, and export rendered chapters to
+and DeepSeek clients against a local mock server, and export rendered chapters to
 `app/build/reader-preview` for checking pagination in a browser.
 
 Release builds are signed with the local debug key, so an APK built on a

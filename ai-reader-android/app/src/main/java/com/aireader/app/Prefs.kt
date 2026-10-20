@@ -12,8 +12,11 @@ enum class ReaderTheme(val bg: Int, val fg: Int, val muted: Int, val accent: Int
 fun cssColor(color: Int) = "#%06X".format(color and 0xFFFFFF)
 
 data class AppSettings(
+    val provider: AiProvider = AiProvider.GEMINI,
     val geminiKey: String = "",
     val geminiModel: String = Gemini.MODEL_FLASH,
+    val deepseekKey: String = "",
+    val deepseekModel: String = DeepSeek.MODEL_FLASH,
     /** Language answers are written in. */
     val language: String = Locale.getDefault().getDisplayLanguage(Locale.ENGLISH),
     val detailed: Boolean = false,
@@ -28,8 +31,11 @@ class Prefs(context: Context) {
     fun load(): AppSettings {
         val defaults = AppSettings()
         return AppSettings(
+            provider = runCatching { AiProvider.valueOf(sp.getString("provider", null)!!) }.getOrDefault(defaults.provider),
             geminiKey = sp.getString("gemini_key", "").orEmpty(),
             geminiModel = sp.getString("gemini_model", null) ?: defaults.geminiModel,
+            deepseekKey = sp.getString("deepseek_key", "").orEmpty(),
+            deepseekModel = sp.getString("deepseek_model", null) ?: defaults.deepseekModel,
             language = sp.getString("language", null)?.ifBlank { null } ?: defaults.language,
             detailed = sp.getBoolean("detailed", defaults.detailed),
             fontSize = sp.getInt("font_size", defaults.fontSize),
@@ -40,8 +46,11 @@ class Prefs(context: Context) {
 
     fun save(s: AppSettings) {
         sp.edit()
+            .putString("provider", s.provider.name)
             .putString("gemini_key", s.geminiKey.trim())
             .putString("gemini_model", s.geminiModel)
+            .putString("deepseek_key", s.deepseekKey.trim())
+            .putString("deepseek_model", s.deepseekModel)
             .putString("language", s.language.trim())
             .putBoolean("detailed", s.detailed)
             .putInt("font_size", s.fontSize)
@@ -50,7 +59,9 @@ class Prefs(context: Context) {
             .apply()
     }
 
-    fun saveModel(model: String) = sp.edit().putString("gemini_model", model).apply()
+    fun saveGeminiModel(model: String) = sp.edit().putString("gemini_model", model).apply()
+
+    fun saveDeepseekModel(model: String) = sp.edit().putString("deepseek_model", model).apply()
 
     /** Chapter and fraction of the chapter read. */
     fun position(bookId: String): Pair<Int, Float> =

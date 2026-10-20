@@ -176,11 +176,12 @@ class AiPanel(private val activity: Activity, private val book: () -> BookInfo) 
 
     private fun run(retried: Boolean = false) {
         val settings = Prefs(activity).load()
-        if (settings.geminiKey.isBlank()) {
+        val provider = settings.provider
+        if (Ai.key(settings).isBlank()) {
             transcript.append(
-                "To get answers right here, add a free Gemini key in Settings. It takes a minute and needs no card.\n\n" +
-                    "Or tap **Ask Claude** or **Ask ChatGPT** below to ask in those free apps."
-            )
+                if (provider == AiProvider.DEEPSEEK) "Add your DeepSeek API key in Settings to get answers right here.\n\n"
+                else "To get answers right here, add a free Gemini key in Settings. It takes a minute and needs no card.\n\n"
+            ).append("Or tap **Ask Claude** or **Ask ChatGPT** below to ask in those free apps.")
             history.removeAt(history.lastIndex)
             openSettings.visibility = View.VISIBLE
             render()
@@ -194,7 +195,7 @@ class AiPanel(private val activity: Activity, private val book: () -> BookInfo) 
         thread(isDaemon = true) {
             var error: String? = null
             try {
-                val outcome = Gemini.stream(settings.geminiKey, settings.geminiModel, system, turns, onConnect = { connection = it }) { text ->
+                val outcome = Ai.stream(settings, system, turns, onConnect = { connection = it }) { text ->
                     reply.append(text)
                     main.post {
                         if (gen != generation) return@post
@@ -203,23 +204,23 @@ class AiPanel(private val activity: Activity, private val book: () -> BookInfo) 
                     }
                 }
                 error = when (outcome) {
-                    Gemini.Outcome.BLOCKED -> "Gemini wouldn't answer this one. Try Ask Claude or Ask ChatGPT."
-                    Gemini.Outcome.TRUNCATED -> "The answer was cut off."
-                    Gemini.Outcome.FINISHED -> null
+                    AiOutcome.BLOCKED -> "${Ai.name(provider)} wouldn't answer this one. Try Ask Claude or Ask ChatGPT."
+                    AiOutcome.TRUNCATED -> "The answer was cut off."
+                    AiOutcome.FINISHED -> null
                 }
-            } catch (e: Gemini.ApiException) {
-                if (e.code == 404 && !retried) {
+            } catch (e: ApiException) {
+                if (provider == AiProvider.GEMINI && e.code == 404 && !retried) {
                     // The saved model name no longer exists: find the current one and try again.
                     val replacement = runCatching { Gemini.check(settings.geminiKey, settings.geminiModel) }.getOrNull()
                     if (replacement != null && replacement != settings.geminiModel) {
-                        Prefs(activity).saveModel(replacement)
+                        Prefs(activity).saveGeminiModel(replacement)
                         main.post { if (gen == generation) run(retried = true) }
                         return@thread
                     }
                 }
-                error = Gemini.describe(e)
+                error = Ai.describe(provider, e)
             } catch (e: Exception) {
-                if (gen == generation) error = Gemini.describe(e)
+                if (gen == generation) error = Ai.describe(provider, e)
             } finally {
                 connection = null
             }

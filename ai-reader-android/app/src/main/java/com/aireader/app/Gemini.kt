@@ -7,8 +7,6 @@ import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 
-data class Turn(val fromUser: Boolean, val text: String)
-
 /** Google Gemini API over plain HTTPS. The free tier needs only a key from aistudio.google.com. */
 object Gemini {
     const val MODEL_FLASH = "gemini-flash-latest"
@@ -16,10 +14,6 @@ object Gemini {
 
     /** Points the client at a local server in tests. */
     internal var baseUrl = "https://generativelanguage.googleapis.com"
-
-    class ApiException(val code: Int, val status: String, message: String) : IOException(message)
-
-    enum class Outcome { FINISHED, BLOCKED, TRUNCATED }
 
     /** Streams a reply, calling [onText] for each piece. Blocking. [onConnect] gets the connection so the caller can cancel it. */
     fun stream(
@@ -29,7 +23,7 @@ object Gemini {
         history: List<Turn>,
         onConnect: (HttpURLConnection) -> Unit,
         onText: (String) -> Unit,
-    ): Outcome {
+    ): AiOutcome {
         val conn = URL("$baseUrl/v1beta/models/$model:streamGenerateContent?alt=sse").openConnection() as HttpURLConnection
         try {
             conn.requestMethod = "POST"
@@ -43,13 +37,13 @@ object Gemini {
             val code = conn.responseCode
             if (code >= 400) throw apiError(code, conn.errorStream)
 
-            var outcome = Outcome.FINISHED
+            var outcome = AiOutcome.FINISHED
             conn.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
                 while (true) {
                     val line = reader.readLine() ?: break
                     if (!line.startsWith("data:")) continue
                     val chunk = runCatching { JSONObject(line.substring(5).trim()) }.getOrNull() ?: continue
-                    if (chunk.optJSONObject("promptFeedback")?.optString("blockReason").orEmpty().isNotEmpty()) outcome = Outcome.BLOCKED
+                    if (chunk.optJSONObject("promptFeedback")?.optString("blockReason").orEmpty().isNotEmpty()) outcome = AiOutcome.BLOCKED
                     val candidate = chunk.optJSONArray("candidates")?.optJSONObject(0) ?: continue
                     val parts = candidate.optJSONObject("content")?.optJSONArray("parts")
                     if (parts != null) {
@@ -62,8 +56,8 @@ object Gemini {
                     }
                     when (candidate.optString("finishReason")) {
                         "", "STOP", "FINISH_REASON_UNSPECIFIED" -> {}
-                        "MAX_TOKENS" -> outcome = Outcome.TRUNCATED
-                        else -> outcome = Outcome.BLOCKED
+                        "MAX_TOKENS" -> outcome = AiOutcome.TRUNCATED
+                        else -> outcome = AiOutcome.BLOCKED
                     }
                 }
             }
