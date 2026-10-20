@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Reading Helper</string>
+    <string name="explain_label">Explain</string>
+    <string name="tile_label">Explain copied text</string>
+</resources>

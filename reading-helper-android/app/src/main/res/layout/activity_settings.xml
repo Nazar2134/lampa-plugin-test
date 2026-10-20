@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="24dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Reading Helper"
+            android:textColor="@color/on_surface"
+            android:textSize="28sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:lineSpacingMultiplier="1.2"
+            android:text="Select a word or sentence in PocketBook (or any app), then pick “Explain” from the selection menu or the Share sheet. You get a translation and a grammar explanation in a popup."
+            android:textColor="@color/muted"
+            android:textSize="15sp" />
+
+        <!-- API key -->
+        <TextView
+            style="@style/SectionLabel"
+            android:text="Claude API key" />
+
+        <EditText
+            android:id="@+id/apiKey"
+            style="@style/Field"
+            android:hint="sk-ant-…"
+            android:inputType="textPassword"
+            android:singleLine="true" />
+
+        <TextView
+            android:id="@+id/getKey"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:paddingVertical="8dp"
+            android:text="Get a key at console.anthropic.com →"
+            android:textColor="@color/accent"
+            android:textSize="14sp" />
+
+        <!-- Language -->
+        <TextView
+            style="@style/SectionLabel"
+            android:text="Explain in this language" />
+
+        <EditText
+            android:id="@+id/language"
+            style="@style/Field"
+            android:hint="e.g. English, Ukrainian"
+            android:inputType="textCapWords"
+            android:singleLine="true" />
+
+        <!-- Model -->
+        <TextView
+            style="@style/SectionLabel"
+            android:text="Model" />
+
+        <RadioGroup
+            android:id="@+id/model"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content">
+
+            <RadioButton
+                android:id="@+id/modelOpus"
+                style="@style/Choice"
+                android:text="Claude Opus 5.5: best explanations" />
+
+            <RadioButton
+                android:id="@+id/modelSonnet"
+                style="@style/Choice"
+                android:text="Claude Sonnet 5.5: faster, cheaper" />
+
+            <RadioButton
+                android:id="@+id/modelHaiku"
+                style="@style/Choice"
+                android:text="Claude Haiku 5.5: fastest, cheapest" />
+        </RadioGroup>
+
+        <!-- Detail -->
+        <TextView
+            style="@style/SectionLabel"
+            android:text="How much detail" />
+
+        <RadioGroup
+            android:id="@+id/detail"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <RadioButton
+                android:id="@+id/detailBrief"
+                style="@style/Choice"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:text="Brief" />
+
+            <RadioButton
+                android:id="@+id/detailFull"
+                style="@style/Choice"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:text="Detailed" />
+        </RadioGroup>
+
+        <Button
+            android:id="@+id/save"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:layout_marginTop="20dp"
+            android:background="@drawable/button_bg"
+            android:text="Save"
+            android:textAllCaps="false"
+            android:textColor="#FFFFFF"
+            android:textSize="16sp" />
+
+        <!-- Try it -->
+        <TextView
+            style="@style/SectionLabel"
+            android:layout_marginTop="32dp"
+            android:text="Try it" />
+
+        <EditText
+            android:id="@+id/sample"
+            style="@style/Field"
+            android:inputType="textMultiLine|textCapSentences"
+            android:text="Wenn ich mehr Zeit gehabt hätte, hätte ich das Buch zu Ende gelesen." />
+
+        <Button
+            android:id="@+id/tryIt"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/field_bg"
+            android:text="Explain this"
+            android:textAllCaps="false"
+            android:textColor="@color/accent" />
+
+        <!-- Tile -->
+        <TextView
+            style="@style/SectionLabel"
+            android:layout_marginTop="32dp"
+            android:text="If “Explain” doesn't show up in PocketBook" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:lineSpacingMultiplier="1.2"
+            android:text="Some readers use their own selection menu. Then: copy the text, swipe down Quick Settings and tap the “Explain copied text” tile."
+            android:textColor="@color/muted"
+            android:textSize="15sp" />
+
+        <Button
+            android:id="@+id/addTile"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/field_bg"
+            android:text="Add Quick Settings tile"
+            android:textAllCaps="false"
+            android:textColor="@color/accent" />
+    </LinearLayout>
+</ScrollView>
