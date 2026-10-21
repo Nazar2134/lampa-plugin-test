@@ -143,7 +143,7 @@ class ScreenshotTest {
             assertEquals(1, list.adapter.count)
             capture(activity, "navigator-notes")
             activity.findViewById<View>(R.id.tabBookmarks).performClick()
-            assertEquals(1, list.adapter.count)
+            assertEquals("where you stopped, then the bookmark", 2, list.adapter.count)
             activity.findViewById<View>(R.id.tabSearch).performClick()
             activity.findViewById<EditText>(R.id.query).setText("brass")
             // Typing is debounced on the main looper's (simulated) clock; the search itself runs on a thread.

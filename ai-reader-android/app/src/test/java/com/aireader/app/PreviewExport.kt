@@ -63,6 +63,11 @@ class PreviewExport {
             write("epub", "OEBPS/Text/restore.xhtml", chapter1, sepia, phone,
                 emptyInit().put("position", JSONObject().put("text", "Ihr Großvater, der den Garten").put("occurrence", 2).put("fraction", 0)), "restore")
 
+            // Reopening a book: the saved spot gets a "You stopped here" marker.
+            write("epub", "OEBPS/Text/resume.xhtml", chapter1, sepia, phone,
+                emptyInit().put("position", JSONObject().put("text", "Marta zog ihre Stiefel an").put("occurrence", 1).put("fraction", 0))
+                    .put("resume", JSONObject().put("label", "You stopped here")), "resume")
+
             // Jumping to a search result.
             write("epub", "OEBPS/Text/search.xhtml", chapter1, sepia, phone,
                 emptyInit().put("target", JSONObject().put("text", "Jonas war in der Stadt").put("occurrence", 1).put("flash", true)), "search")

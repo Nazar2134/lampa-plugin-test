@@ -51,8 +51,15 @@ class ReaderActivity : Activity(), AiHost {
     private var pageCount = 1
     private var pageAnchor: JSONObject? = null
     private var currentBookmark = 0L
-    /** Positions to return to with Back after following a link or jumping from the contents screen. */
+    /**
+     * Positions to return to with Back after following a link or jumping from the contents screen.
+     * The first one is the reading place: while there are jumps the saved position is left alone, so a
+     * look at a footnote or a search result doesn't lose where the reader stopped.
+     */
     private val jumps = ArrayDeque<ReadingPosition>()
+    /** Pages turned since the last jump; reading on this far makes the new spot the reading place. */
+    private var awayPages = 0
+    private var lastAwayPage = ""
 
     private lateinit var root: View
     private lateinit var web: ReaderWebView
@@ -62,6 +69,8 @@ class ReaderActivity : Activity(), AiHost {
     private lateinit var stylePanel: LinearLayout
     private lateinit var loading: ProgressBar
     private lateinit var bookmarkButton: ImageButton
+    private lateinit var selectionBar: LinearLayout
+    private lateinit var backToPlace: LinearLayout
     private lateinit var ai: AiPanel
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -91,7 +100,10 @@ class ReaderActivity : Activity(), AiHost {
         stylePanel = findViewById(R.id.stylePanel)
         loading = findViewById(R.id.loading)
         bookmarkButton = findViewById(R.id.bookmark)
+        selectionBar = findViewById(R.id.selectionBar)
+        backToPlace = findViewById(R.id.backToPlace)
         ai = AiPanel(this, this)
+        ai.onClosed = { updateBackToPlace() }
         bookTitle.text = entry.title
 
         topBar.setOnApplyWindowInsetsListener { v, insets ->
@@ -101,6 +113,7 @@ class ReaderActivity : Activity(), AiHost {
         }
         setUpWebView()
         setUpBars()
+        setUpSelectionBar()
         applyTheme()
         setBarsVisible(false)
 
@@ -112,10 +125,17 @@ class ReaderActivity : Activity(), AiHost {
                     if (isDestroyed) return@onSuccess
                     session = s
                     prefs.markOpened(bookId)
-                    val position = intent.getIntExtra(EXTRA_CHAPTER, -1).takeIf { it >= 0 }
-                        ?.let { ReadingPosition(it, 0f) } ?: prefs.position(bookId)
+                    val saved = prefs.position(bookId)
                     val target = intent.getStringExtra(EXTRA_TARGET)?.let { runCatching { JSONObject(it) }.getOrNull() }
-                    openChapter(position.chapter.coerceIn(0, s.book.chapterCount - 1), position, target = target)
+                    val requested = intent.getIntExtra(EXTRA_CHAPTER, -1).takeIf { it >= 0 }
+                    if (requested != null || target != null) {
+                        // Opened at a specific spot (e.g. a saved word): keep the reading place to come back to.
+                        if (saved.isStarted()) leavePlace(saved)
+                        val chapterToOpen = (requested ?: saved.chapter).coerceIn(0, s.book.chapterCount - 1)
+                        openChapter(chapterToOpen, ReadingPosition(chapterToOpen, 0f), target = target)
+                    } else {
+                        openChapter(saved.chapter.coerceIn(0, s.book.chapterCount - 1), saved, resume = saved.isStarted())
+                    }
                     // Text and index for search, progress and AI context; built once per book session.
                     thread(isDaemon = true) {
                         runCatching { s.prepare() }
@@ -225,7 +245,13 @@ class ReaderActivity : Activity(), AiHost {
 
     // --- Navigation ---
 
-    private fun openChapter(index: Int, position: ReadingPosition? = null, atEnd: Boolean = false, target: JSONObject? = null) {
+    private fun ReadingPosition.isStarted() = chapter > 0 || fraction > 0f
+
+    /**
+     * Opens a chapter at a position, at its end, or at a [target] (element id or text anchor).
+     * [resume] marks the position with "You stopped here".
+     */
+    private fun openChapter(index: Int, position: ReadingPosition? = null, atEnd: Boolean = false, target: JSONObject? = null, resume: Boolean = false) {
         val b = book ?: return
         chapter = index.coerceIn(0, b.chapterCount - 1)
         page = 0
@@ -238,7 +264,9 @@ class ReaderActivity : Activity(), AiHost {
             init.put("position", JSONObject().put("fraction", position.fraction.toDouble()).put("text", position.anchorText).put("occurrence", position.anchorOccurrence))
         }
         if (target != null) init.put("target", target)
+        if (resume) init.put("resume", JSONObject().put("label", "You stopped here"))
         pendingInit = init.toString()
+        hideSelectionBar()
         web.loadUrl(b.chapterUrl(chapter))
         updateStatus()
     }
@@ -283,7 +311,7 @@ class ReaderActivity : Activity(), AiHost {
             val path = Paths.decode(uri.encodedPath.orEmpty().removePrefix("/"))
             (b.chapterIndexForPath(path) ?: return) to uri.fragment
         }
-        jumps.addLast(currentPosition())
+        leavePlace(currentPosition())
         openChapter(target.first, target = target.second?.let { JSONObject().put("id", it) })
     }
 
@@ -316,6 +344,92 @@ class ReaderActivity : Activity(), AiHost {
         if (book == null) return
         val position = currentPosition()
         prefs.setPosition(bookId, position, progress(position.fraction))
+    }
+
+    /** Remembers [from] before jumping elsewhere and offers the way back. */
+    private fun leavePlace(from: ReadingPosition) {
+        jumps.addLast(from)
+        awayPages = 0
+        lastAwayPage = ""
+        updateBackToPlace()
+    }
+
+    /** Goes back to where the reader stopped (the place before the first jump). */
+    private fun returnToPlace() {
+        val place = jumps.firstOrNull() ?: prefs.position(bookId)
+        jumps.clear()
+        updateBackToPlace()
+        openChapter(place.chapter, place, resume = true)
+    }
+
+    /** Makes the current spot the reading place (the reader chose to stay, or read on from here). */
+    private fun adoptCurrentPlace() {
+        jumps.clear()
+        savePosition()
+        updateBackToPlace()
+    }
+
+    private fun updateBackToPlace() {
+        backToPlace.visibility = if (jumps.isNotEmpty() && selectionBar.visibility != View.VISIBLE && !ai.isOpen) View.VISIBLE else View.GONE
+    }
+
+    // --- Selection bar ---
+
+    private fun setUpSelectionBar() {
+        val js = { code: String -> web.evaluateJavascript(code, null) }
+        findViewById<View>(R.id.selWord).setOnClickListener { js("reader.expandSelection('word')") }
+        findViewById<View>(R.id.selSentence).setOnClickListener { js("reader.expandSelection('sentence')") }
+        findViewById<View>(R.id.selParagraph).setOnClickListener { js("reader.expandSelection('paragraph')") }
+        findViewById<View>(R.id.selLeft).apply {
+            setOnClickListener { js("reader.nudgeSelection('start', -1)") }
+            setOnLongClickListener { js("reader.nudgeSelection('start', 1)"); true }
+        }
+        findViewById<View>(R.id.selRight).apply {
+            setOnClickListener { js("reader.nudgeSelection('end', 1)") }
+            setOnLongClickListener { js("reader.nudgeSelection('end', -1)"); true }
+        }
+        mapOf(
+            R.id.selExplain to SelectionAction.EXPLAIN, R.id.selTranslate to SelectionAction.TRANSLATE,
+            R.id.selHighlight to SelectionAction.HIGHLIGHT, R.id.selSave to SelectionAction.SAVE_WORD, R.id.selAsk to SelectionAction.ASK,
+        ).forEach { (id, action) -> findViewById<View>(id).setOnClickListener { onSelectionAction(action) } }
+        findViewById<View>(R.id.selCopy).setOnClickListener {
+            withSelection { sel ->
+                getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(android.content.ClipData.newPlainText("Text", sel.text))
+                Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show()
+            }
+        }
+        backToPlace.setOnClickListener { returnToPlace() }
+        findViewById<View>(R.id.backToPlaceClose).setOnClickListener {
+            adoptCurrentPlace()
+            Toast.makeText(this, "This is now your reading place", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /** Shows the selection bar on the opposite half of the screen from the selection ([top]/[bottom] in CSS px). */
+    private fun showSelectionBar(top: Int, bottom: Int) {
+        if (ai.isOpen) return
+        val density = resources.displayMetrics.density
+        val heightDp = root.height / density
+        val params = selectionBar.layoutParams as FrameLayout.LayoutParams
+        val selectionLow = (top + bottom) / 2f > heightDp * 0.5f
+        if (selectionLow) {
+            val inset = window.decorView.rootWindowInsets?.getInsetsIgnoringVisibility(WindowInsets.Type.statusBars() or WindowInsets.Type.displayCutout())?.top ?: 0
+            params.gravity = Gravity.TOP
+            params.topMargin = inset + (8 * density).toInt()
+            params.bottomMargin = 0
+        } else {
+            params.gravity = Gravity.BOTTOM
+            params.topMargin = 0
+            params.bottomMargin = (30 * density).toInt()
+        }
+        selectionBar.layoutParams = params
+        selectionBar.visibility = View.VISIBLE
+        updateBackToPlace()
+    }
+
+    private fun hideSelectionBar() {
+        selectionBar.visibility = View.GONE
+        updateBackToPlace()
     }
 
     // --- AiHost ---
@@ -367,7 +481,9 @@ class ReaderActivity : Activity(), AiHost {
 
     private fun openAi(action: AiAction, sel: Selection) {
         setBarsVisible(false)
+        hideSelectionBar()
         ai.openForSelection(action, sel)
+        updateBackToPlace()
     }
 
     private fun askAboutBook() {
@@ -558,6 +674,18 @@ class ReaderActivity : Activity(), AiHost {
             light,
             WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS,
         )
+        selectionBar.background = GradientDrawable().apply {
+            setColor(if (t == ReaderTheme.LIGHT) 0xFFFAF8F5.toInt() else t.bg)
+            cornerRadius = 16 * density
+            setStroke((1 * density).toInt(), (t.muted and 0x00FFFFFF) or 0x50000000)
+        }
+        for (id in listOf(R.id.selLeft, R.id.selWord, R.id.selSentence, R.id.selParagraph, R.id.selRight)) findViewById<TextView>(id).setTextColor(t.fg)
+        for (id in listOf(R.id.selExplain, R.id.selTranslate, R.id.selHighlight, R.id.selSave, R.id.selAsk, R.id.selCopy)) findViewById<TextView>(id).setTextColor(t.accent)
+        findViewById<View>(R.id.selDivider).setBackgroundColor((t.muted and 0x00FFFFFF) or 0x40000000)
+        backToPlace.background = GradientDrawable().apply {
+            setColor(t.accent)
+            cornerRadius = 20 * density
+        }
         ai.applyTheme(t)
     }
 
@@ -585,9 +713,13 @@ class ReaderActivity : Activity(), AiHost {
         @Suppress("DEPRECATION")
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode != NAVIGATE || resultCode != RESULT_OK || data == null) return
+        if (data.getBooleanExtra(EXTRA_RESUME, false)) {
+            if (jumps.isNotEmpty()) returnToPlace() else prefs.position(bookId).let { openChapter(it.chapter, it, resume = true) }
+            return
+        }
         val target = data.getStringExtra(EXTRA_TARGET)?.let { runCatching { JSONObject(it) }.getOrNull() }
         val fraction = data.getFloatExtra(EXTRA_FRACTION, 0f)
-        jumps.addLast(currentPosition())
+        leavePlace(currentPosition())
         openChapter(data.getIntExtra(EXTRA_CHAPTER, chapter), ReadingPosition(data.getIntExtra(EXTRA_CHAPTER, chapter), fraction), target = target)
     }
 
@@ -610,7 +742,11 @@ class ReaderActivity : Activity(), AiHost {
         when {
             ai.isOpen -> ai.close()
             stylePanel.visibility == View.VISIBLE -> stylePanel.visibility = View.GONE
-            jumps.isNotEmpty() -> jumps.removeLast().let { openChapter(it.chapter, it) }
+            selectionBar.visibility == View.VISIBLE -> web.evaluateJavascript("reader.clearSelection()", null)
+            jumps.isNotEmpty() -> jumps.removeLast().let {
+                updateBackToPlace()
+                openChapter(it.chapter, it, resume = jumps.isEmpty())
+            }
             else -> @Suppress("DEPRECATION") super.onBackPressed()
         }
     }
@@ -623,7 +759,15 @@ class ReaderActivity : Activity(), AiHost {
             pageCount = count
             pageAnchor = anchor.takeIf { it.isNotEmpty() }?.let { runCatching { JSONObject(it) }.getOrNull() }
             currentBookmark = bookmark
-            savePosition()
+            if (jumps.isEmpty()) {
+                savePosition()
+            } else {
+                val key = "$chapter:$p"
+                if (key != lastAwayPage) {
+                    lastAwayPage = key
+                    if (++awayPages > AWAY_PAGES_TO_STAY) adoptCurrentPlace()
+                }
+            }
             updateStatus()
         }
 
@@ -638,6 +782,11 @@ class ReaderActivity : Activity(), AiHost {
 
         @JavascriptInterface
         fun onHighlightTap(id: Long) = runOnUiThread { editHighlight(id) }
+
+        @JavascriptInterface
+        fun onSelectionChanged(active: Boolean, top: Int, bottom: Int) = runOnUiThread {
+            if (active) showSelectionBar(top, bottom) else hideSelectionBar()
+        }
 
         @JavascriptInterface
         fun nextChapter() = runOnUiThread {
@@ -661,6 +810,9 @@ class ReaderActivity : Activity(), AiHost {
         const val EXTRA_CHAPTER = "chapter"
         const val EXTRA_TARGET = "target"
         const val EXTRA_FRACTION = "fraction"
+        const val EXTRA_RESUME = "resume"
+        /** Turning this many pages after a jump makes the new spot the reading place. */
+        private const val AWAY_PAGES_TO_STAY = 3
         private const val NAVIGATE = 2
     }
 }

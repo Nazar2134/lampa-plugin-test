@@ -34,6 +34,8 @@ class NavigatorActivity : Activity() {
         val fraction: Float = 0f,
         val bold: Boolean = false,
         val onDelete: (() -> Unit)? = null,
+        /** The automatic "where you stopped" entry. */
+        val resume: Boolean = false,
     )
 
     private enum class Tab { CONTENTS, BOOKMARKS, NOTES, SEARCH }
@@ -117,11 +119,21 @@ class NavigatorActivity : Activity() {
                 }, "This book has no table of contents.")
                 if (current > 0) list.setSelection((current - 2).coerceAtLeast(0))
             }
-            Tab.BOOKMARKS -> setRows(db.bookmarks(session.bookId).map { b ->
-                Row(b.label.ifBlank { "Bookmark" } + "…", book.chapterTitle(b.chapter), b.chapter,
-                    b.anchorText.takeIf { it.isNotEmpty() }?.let { JSONObject().put("text", it).put("occurrence", b.anchorOccurrence) },
-                    b.fraction, onDelete = { db.deleteBookmark(b.id) })
-            }, "No bookmarks yet.\n\nTap the bookmark icon in the reader's toolbar to mark a page.")
+            Tab.BOOKMARKS -> {
+                // Where the reader stopped is kept automatically and always listed first.
+                val place = Prefs(this).position(session.bookId)
+                val resume = Row(
+                    "Where you stopped",
+                    listOf(book.chapterTitle(place.chapter.coerceIn(0, book.chapterCount - 1)), place.anchorText.takeIf { it.isNotBlank() }?.let { "“$it…”" })
+                        .filterNotNull().joinToString(" · "),
+                    place.chapter, null, place.fraction, bold = true, resume = true,
+                )
+                setRows(listOf(resume) + db.bookmarks(session.bookId).map { b ->
+                    Row(b.label.ifBlank { "Bookmark" } + "…", book.chapterTitle(b.chapter), b.chapter,
+                        b.anchorText.takeIf { it.isNotEmpty() }?.let { JSONObject().put("text", it).put("occurrence", b.anchorOccurrence) },
+                        b.fraction, onDelete = { db.deleteBookmark(b.id) })
+                }, "")
+            }
             Tab.NOTES -> setRows(db.highlights(session.bookId).map { h ->
                 val sub = listOf(h.note, book.chapterTitle(h.chapter)).filter { it.isNotBlank() }.joinToString("\n")
                 Row("“${h.text}”", sub, h.chapter, JSONObject().put("text", h.text).put("occurrence", h.occurrence).put("flash", true),
@@ -186,7 +198,8 @@ class NavigatorActivity : Activity() {
         setResult(RESULT_OK, Intent()
             .putExtra(ReaderActivity.EXTRA_CHAPTER, row.chapter)
             .putExtra(ReaderActivity.EXTRA_FRACTION, row.fraction)
-            .putExtra(ReaderActivity.EXTRA_TARGET, row.target?.toString()))
+            .putExtra(ReaderActivity.EXTRA_TARGET, row.target?.toString())
+            .putExtra(ReaderActivity.EXTRA_RESUME, row.resume))
         finish()
     }
 

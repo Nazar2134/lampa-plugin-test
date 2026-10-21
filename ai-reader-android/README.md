@@ -4,8 +4,25 @@ An EPUB and FB2 e-book reader with a book-aware AI reading companion.
 
 ## Reading
 
-- **Pages:** tap the right or left third of the page, swipe, or use the volume keys or a keyboard
-  (arrows, Page Up/Down, Space) to turn pages. Tap the middle for the toolbar.
+- **Pages:** drag with your finger and the page follows; let go past about a fifth of the screen (or
+  flick) to turn, otherwise it slides back. Quick taps on the outer quarters also turn pages; tap the
+  middle for the toolbar. Volume keys and a keyboard (arrows, Page Up/Down, Space) work too. To avoid
+  accidental turns:
+  - presses longer than a tap don't turn the page;
+  - drags that start after a long press don't turn it;
+  - nothing turns the page while text is selected;
+  - anything else that would scroll the page (such as selection handles dragged to the edge) is undone.
+- **Where you stopped** is kept automatically; there is no need to bookmark it:
+  - reopening a book marks the spot ("You stopped here" in the top margin, a bar beside the line, and the
+    first words briefly tinted);
+  - after jumping away (contents, search, a footnote, a saved word), **↩ Back to where you stopped**
+    returns there, and the saved place isn't moved while you look around;
+  - reading on for three pages, or tapping × on that button, makes the new spot your place;
+  - "Where you stopped" is also the first entry under Bookmarks.
+- **Selecting text:** long-press a word, then use the bar that appears (placed away from the selection)
+  instead of dragging handles: **Word / Sentence / Paragraph**, or **‹ +** and **+ ›** to add a word on
+  either side (long-press them to remove one). The same bar has Explain, Translate, Highlight, Save word,
+  Ask AI and Copy.
 - **Aa:** font size, font (serif, sans, or the book's own), line spacing, margins, justified or
   left-aligned text, and Light, Sepia or Dark themes. Wide screens (840 dp and up, for example tablets
   in landscape) get two columns; on tablets in portrait the line length is capped.
@@ -13,9 +30,9 @@ An EPUB and FB2 e-book reader with a book-aware AI reading companion.
 - **List icon:** opens Contents, Bookmarks, Notes (highlights and their notes) and **Search**, which
   searches the whole book. Picking a result opens the page and briefly flashes the match. Back returns
   to where you were.
-- **Select text → Highlight:** four colours, with an optional note. Tap a highlight to edit it.
-- **Position:** saved per book as a short text anchor, so the same spot reopens even after the font
-  or margins change. Progress is weighted by chapter length.
+- **Highlight** (from the selection bar or menu): four colours, with an optional note. Tap a highlight to edit it.
+- **Position:** saved per book as a short text anchor, so the same spot reopens even after the font or
+  margins change. Progress is weighted by chapter length.
 
 ## AI companion
 
@@ -112,7 +129,8 @@ All AI tests use a local mock server; none make paid calls.
 | `PersistenceTest` (Robolectric) | Database and settings across restarts, migration from v1 settings, library import, dedupe, removal and cleanup |
 | `AiPanelTest` (Robolectric) | The AI panel end to end: context sent per action, earlier-chapter retrieval, caching, saved chat, provider errors, model renames |
 | `ScreenshotTest` (Robolectric) | Renders the native screens to `app/build/screens` and checks their controls |
-| `PreviewExport` | Writes real chapter pages to `app/build/reader-preview` for the browser check of `reader.js` (pagination, anchors, highlights, bookmarks, search jumps, hostile book content, tablet layout) |
+| `ReadingPlaceTest` (Robolectric) | Selection bar placement and buttons; keeping the reading place across jumps, going back, reading on, "Where you stopped" |
+| `PreviewExport` | Writes real chapter pages to `app/build/reader-preview` for the browser check of `reader.js`: pagination, finger drags, flicks, long-press and selection guards, selection tools, the resume marker, anchors, highlights, bookmarks, search jumps, hostile book content, tablet layout |
 
 Release builds are signed with the local debug key, so an APK built on a different machine can't install
 over an existing one. Uninstall first.

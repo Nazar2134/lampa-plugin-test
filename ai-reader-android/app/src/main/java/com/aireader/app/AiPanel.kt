@@ -78,6 +78,9 @@ class AiPanel(private val activity: Activity, private val host: AiHost) {
 
     val isOpen get() = panel.visibility == View.VISIBLE
 
+    /** Called after the panel closes. */
+    var onClosed: (() -> Unit)? = null
+
     init {
         val basePadding = panel.paddingBottom
         panel.setOnApplyWindowInsetsListener { v, insets ->
@@ -210,6 +213,7 @@ class AiPanel(private val activity: Activity, private val host: AiHost) {
         connection?.disconnect()
         hideKeyboard()
         panel.visibility = View.GONE
+        onClosed?.invoke()
     }
 
     private fun show() {
