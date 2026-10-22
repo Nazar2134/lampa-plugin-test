@@ -118,6 +118,8 @@ class ReadingPlaceTest {
         assertEquals("reader.nudgeSelection('start', -1)", shadowOf(web).lastEvaluatedJavascript)
         activity.findViewById<View>(R.id.selExplain).performClick()
         assertEquals("actions read the selection", "reader.selectionInfo()", shadowOf(web).lastEvaluatedJavascript)
+        activity.findViewById<View>(R.id.selChatgpt).performClick()
+        assertEquals("ChatGPT reads the selection too", "reader.selectionInfo()", shadowOf(web).lastEvaluatedJavascript)
 
         call("onSelectionChanged", false, 0, 0)
         assertEquals(View.GONE, bar.visibility)

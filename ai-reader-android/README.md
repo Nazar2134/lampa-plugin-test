@@ -60,8 +60,12 @@ has an action row:
     Gemini) and then answers.
   - Items that other apps add to the text-selection menu (ChatGPT, Claude, translators) are hidden in the
     reader, so selecting text never jumps to another app.
-- **Ask Claude ↗ / Ask ChatGPT ↗** appear only when the reader can't answer itself (no key, or an error).
-  They hand the question to those apps (or websites) with it pre-filled, using your own free account.
+- **ChatGPT and Claude, inside the reader:** **ChatGPT** in the selection bar, and **Ask ChatGPT** /
+  **Ask Claude** in the panel, open chatgpt.com or claude.ai in a window over the book (a Chrome Custom Tab
+  shown as a bottom sheet, Chrome 107+; other browsers show it full screen).
+  - The question is filled in and also copied to the clipboard.
+  - It uses your own account in Chrome (sign in once there).
+  - Swipe the window down to return to the page; nothing switches to the ChatGPT or Claude app.
 
 ### How the AI sees the book
 

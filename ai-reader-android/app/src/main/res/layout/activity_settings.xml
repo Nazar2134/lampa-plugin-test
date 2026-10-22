@@ -229,7 +229,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:lineSpacingMultiplier="1.2"
-            android:text="These buttons in the answer panel open the Claude or ChatGPT app (or website) with your question already written, using your own free account. Nothing to set up. Install the apps from the Play Store if you don't have them."
+            android:text="These buttons, and ChatGPT in the selection bar, open ChatGPT or Claude in a window over the book with your question already written, using your own account in Chrome (sign in there once). Swipe the window down to keep reading."
             android:textColor="@color/muted"
             android:textSize="14sp" />
     </LinearLayout>

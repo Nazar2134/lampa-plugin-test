@@ -545,7 +545,7 @@ class AiPanel(private val activity: Activity, private val host: AiHost) {
         val typed = input.text.toString().trim().ifEmpty { null }
         val sel = selection
         val request = AiRequest(action, sel?.text.orEmpty(), sel?.sentence.orEmpty(), sel?.context.orEmpty(), question = typed ?: lastQuestion)
-        Handoff.send(activity, target, Prompts.handoff(host.bookInfo(), Prefs(activity).load(), request, pageText))
+        Handoff.send(activity, target, Prompts.handoff(host.bookInfo(), Prefs(activity).load(), request, pageText), theme)
     }
 
     private fun addBubble(kind: Kind, text: String) {
@@ -613,9 +613,9 @@ class AiPanel(private val activity: Activity, private val host: AiHost) {
         messages.visibility = if (bubbles.isEmpty()) View.GONE else View.VISIBLE
         val hasAnswer = bubbles.any { it.kind == Kind.AI }
         copy.visibility = if (hasAnswer) View.VISIBLE else View.GONE
-        val handoff = if (cantAnswer || setup.visibility == View.VISIBLE) View.VISIBLE else View.GONE
-        claude.visibility = handoff
-        chatgpt.visibility = handoff
+        // ChatGPT and Claude open in a window over the book, so they're always offered.
+        claude.visibility = View.VISIBLE
+        chatgpt.visibility = View.VISIBLE
         if (atBottom && (lastQuestion != null || bubbles.size > 1)) scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
     }
 

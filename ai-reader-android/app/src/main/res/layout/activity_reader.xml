@@ -220,6 +220,7 @@
                 <TextView android:id="@+id/selHighlight" style="@style/SelectionAction" android:text="Highlight" />
                 <TextView android:id="@+id/selSave" style="@style/SelectionAction" android:text="Save word" />
                 <TextView android:id="@+id/selAsk" style="@style/SelectionAction" android:text="Ask AI" />
+                <TextView android:id="@+id/selChatgpt" style="@style/SelectionAction" android:text="ChatGPT" />
                 <TextView android:id="@+id/selCopy" style="@style/SelectionAction" android:text="Copy" />
             </LinearLayout>
         </HorizontalScrollView>
@@ -464,14 +465,14 @@
             android:layout_height="wrap_content"
             android:gravity="center_vertical">
 
-            <!-- Only shown when the reader can't answer itself (no key, or an error) -->
+            <!-- Open ChatGPT / Claude in a window over the book, with the question filled in -->
             <Button
                 android:id="@+id/aiClaude"
                 style="?android:attr/borderlessButtonStyle"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:paddingHorizontal="8dp"
-                android:text="Ask Claude ↗"
+                android:text="Ask Claude"
                 android:textAllCaps="false" />
 
             <Button
@@ -480,7 +481,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:paddingHorizontal="8dp"
-                android:text="Ask ChatGPT ↗"
+                android:text="Ask ChatGPT"
                 android:textAllCaps="false" />
 
             <View

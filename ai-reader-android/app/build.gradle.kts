@@ -11,8 +11,8 @@ android {
         applicationId = "com.aireader.app"
         minSdk = 30
         targetSdk = 35
-        versionCode = 5
-        versionName = "1.4"
+        versionCode = 6
+        versionName = "1.5"
     }
 
     buildTypes {
@@ -48,6 +48,9 @@ kotlin {
 }
 
 dependencies {
+    // Chrome Custom Tabs: ChatGPT and Claude open in a sheet over the book instead of in their apps.
+    implementation("androidx.browser:browser:1.8.0")
+
     // Unit tests run on the JVM, where Android's XML parser and org.json are stubs.
     testImplementation("junit:junit:4.13.2")
     testImplementation("net.sf.kxml:kxml2:2.3.0")

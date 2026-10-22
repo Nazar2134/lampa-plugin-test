@@ -222,8 +222,30 @@ class AiPanelTest {
         assertEquals("sk-new", Prefs(context).load().deepseekKey)
         assertEquals("Ключ, який Марта знайшла раніше.", shown())
         assertEquals(View.GONE, activity.findViewById<View>(R.id.aiSetup).visibility)
-        assertEquals("answers stay in the reader", View.GONE, activity.findViewById<View>(R.id.aiClaude).visibility)
-        assertEquals(View.GONE, activity.findViewById<View>(R.id.aiChatgpt).visibility)
+    }
+
+    @Test
+    fun chatGptOpensInAWindowOverTheBookNotItsApp() {
+        server.fallback = answer("x")
+        ai.openForSelection(AiAction.EXPLAIN, shed)
+        settle()
+        assertEquals(View.VISIBLE, activity.findViewById<View>(R.id.aiChatgpt).visibility)
+        activity.findViewById<View>(R.id.aiChatgpt).performClick()
+        val started = shadowOf(activity).nextStartedActivityForResult
+        assertEquals(Handoff.REQUEST_CODE, started.requestCode)
+        val intent = started.intent
+        assertEquals(Intent.ACTION_VIEW, intent.action)
+        assertEquals("chatgpt.com", intent.data!!.host)
+        val question = intent.data!!.getQueryParameter("q")!!
+        assertTrue(question, question.contains("\"brass key\"") && question.contains("The Brass Key"))
+        assertTrue("shown as a bottom sheet", intent.getIntExtra("androidx.browser.customtabs.extra.INITIAL_ACTIVITY_HEIGHT_PX", 0) > 0)
+        assertTrue("a Custom Tab", intent.hasExtra("android.support.customtabs.extra.SESSION"))
+        assertTrue("not the ChatGPT app", intent.`package` != "com.openai.chatgpt")
+        val clip = context.getSystemService(android.content.ClipboardManager::class.java).primaryClip!!.getItemAt(0).text.toString()
+        assertEquals(question, clip)
+
+        activity.findViewById<View>(R.id.aiClaude).performClick()
+        assertEquals("claude.ai", shadowOf(activity).nextStartedActivityForResult.intent.data!!.host)
     }
 
     @Test

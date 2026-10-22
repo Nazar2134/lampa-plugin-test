@@ -392,6 +392,12 @@ class ReaderActivity : Activity(), AiHost {
             R.id.selExplain to SelectionAction.EXPLAIN, R.id.selTranslate to SelectionAction.TRANSLATE,
             R.id.selHighlight to SelectionAction.HIGHLIGHT, R.id.selSave to SelectionAction.SAVE_WORD, R.id.selAsk to SelectionAction.ASK,
         ).forEach { (id, action) -> findViewById<View>(id).setOnClickListener { onSelectionAction(action) } }
+        findViewById<View>(R.id.selChatgpt).setOnClickListener {
+            withSelection { sel ->
+                val request = AiRequest(AiAction.EXPLAIN, sel.text, sel.sentence, sel.context)
+                Handoff.send(this, Handoff.Target.CHATGPT, Prompts.handoff(bookInfo(), prefs.load(), request, ""), settings.theme)
+            }
+        }
         findViewById<View>(R.id.selCopy).setOnClickListener {
             withSelection { sel ->
                 getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(android.content.ClipData.newPlainText("Text", sel.text))
@@ -680,7 +686,7 @@ class ReaderActivity : Activity(), AiHost {
             setStroke((1 * density).toInt(), (t.muted and 0x00FFFFFF) or 0x50000000)
         }
         for (id in listOf(R.id.selLeft, R.id.selWord, R.id.selSentence, R.id.selParagraph, R.id.selRight)) findViewById<TextView>(id).setTextColor(t.fg)
-        for (id in listOf(R.id.selExplain, R.id.selTranslate, R.id.selHighlight, R.id.selSave, R.id.selAsk, R.id.selCopy)) findViewById<TextView>(id).setTextColor(t.accent)
+        for (id in listOf(R.id.selExplain, R.id.selTranslate, R.id.selHighlight, R.id.selSave, R.id.selAsk, R.id.selChatgpt, R.id.selCopy)) findViewById<TextView>(id).setTextColor(t.accent)
         findViewById<View>(R.id.selDivider).setBackgroundColor((t.muted and 0x00FFFFFF) or 0x40000000)
         backToPlace.background = GradientDrawable().apply {
             setColor(t.accent)
