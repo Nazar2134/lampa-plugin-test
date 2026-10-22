@@ -142,6 +142,7 @@ class VocabularyActivity : Activity() {
                 val s = status.findViewById<RadioButton>(status.checkedRadioButtonId)?.tag as? VocabStatus ?: e.status
                 db.updateVocab(e.copy(translation = translation.text.toString().trim(), notes = notes.text.toString().trim(), status = s,
                     intervalDays = if (s == VocabStatus.KNOWN && e.status != VocabStatus.KNOWN) maxOf(e.intervalDays, 30.0) else e.intervalDays))
+                if (s == VocabStatus.KNOWN && e.status != VocabStatus.KNOWN) WordStore.learntInVocabulary(this, e.word)
                 refresh()
             }
             .setNegativeButton("Delete") { _, _ ->
@@ -211,6 +212,7 @@ class VocabularyActivity : Activity() {
         val e = queue.removeFirstOrNull() ?: return
         val updated = Vocabulary.review(e, g)
         db.updateVocab(updated)
+        if (updated.status == VocabStatus.KNOWN && e.status != VocabStatus.KNOWN) WordStore.learntInVocabulary(this, e.word)
         reviewed++
         if (g == Vocabulary.Grade.AGAIN) queue.addLast(updated)
         showCard()

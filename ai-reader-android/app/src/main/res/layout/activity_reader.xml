@@ -11,12 +11,14 @@
 
     <TextView
         android:id="@+id/status"
-        android:layout_width="match_parent"
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_gravity="bottom"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginHorizontal="16dp"
         android:ellipsize="middle"
         android:gravity="center"
-        android:paddingHorizontal="24dp"
+        android:paddingHorizontal="8dp"
+        android:paddingTop="8dp"
         android:paddingBottom="12dp"
         android:singleLine="true"
         android:textSize="12sp" />
@@ -61,6 +63,12 @@
             android:src="@drawable/ic_sparkle" />
 
         <ImageButton
+            android:id="@+id/readAloud"
+            style="@style/ToolbarIcon"
+            android:contentDescription="Read aloud from this page"
+            android:src="@drawable/ic_headphones" />
+
+        <ImageButton
             android:id="@+id/bookmark"
             style="@style/ToolbarIcon"
             android:contentDescription="Bookmark this page"
@@ -77,7 +85,7 @@
             android:layout_width="48dp"
             android:layout_height="48dp"
             android:background="?android:attr/selectableItemBackgroundBorderless"
-            android:contentDescription="Text style"
+            android:contentDescription="Text style and learning mode"
             android:gravity="center"
             android:text="Aa"
             android:textSize="18sp"
@@ -134,6 +142,145 @@
             <TextView android:id="@+id/themeLight" style="@style/StyleChip" android:text="Light" />
             <TextView android:id="@+id/themeSepia" style="@style/StyleChip" android:text="Sepia" />
             <TextView android:id="@+id/themeDark" style="@style/StyleChip" android:text="Dark" />
+        </LinearLayout>
+
+        <LinearLayout style="@style/StyleRow">
+            <TextView style="@style/StyleRowLabel" android:text="Learning" />
+            <TextView android:id="@+id/learnOff" style="@style/StyleChip" android:text="Off" />
+            <TextView android:id="@+id/learnOn" style="@style/StyleChip" android:contentDescription="Learning mode: tap a word for its meaning" android:text="Tap words" />
+            <TextView android:id="@+id/learnUnderline" style="@style/StyleChip" android:contentDescription="Underline words you haven't looked at yet" android:text="Mark new" />
+        </LinearLayout>
+
+        <LinearLayout style="@style/StyleRow">
+            <TextView style="@style/StyleRowLabel" android:text="Voice" />
+            <TextView android:id="@+id/rateSlower" style="@style/StyleChip" android:contentDescription="Read aloud more slowly" android:text="Slower" />
+            <TextView android:id="@+id/rateLabel" style="@style/StyleChip" android:background="@null" />
+            <TextView android:id="@+id/rateFaster" style="@style/StyleChip" android:contentDescription="Read aloud faster" android:text="Faster" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Reading aloud: stop -->
+    <TextView
+        android:id="@+id/speakBar"
+        android:layout_width="wrap_content"
+        android:layout_height="40dp"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginBottom="36dp"
+        android:elevation="6dp"
+        android:gravity="center"
+        android:paddingHorizontal="18dp"
+        android:text="■  Stop reading aloud"
+        android:textColor="#FFFFFF"
+        android:textSize="14sp"
+        android:visibility="gone" />
+
+    <!-- Learning mode: what a tapped word means -->
+    <LinearLayout
+        android:id="@+id/glossCard"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:layout_marginHorizontal="10dp"
+        android:layout_marginBottom="30dp"
+        android:accessibilityPaneTitle="Word"
+        android:clickable="true"
+        android:elevation="10dp"
+        android:orientation="vertical"
+        android:paddingHorizontal="16dp"
+        android:paddingTop="10dp"
+        android:paddingBottom="6dp"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:id="@+id/glossHeadword"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textIsSelectable="false"
+                android:textSize="21sp"
+                android:textStyle="bold" />
+
+            <ImageButton
+                android:id="@+id/glossSpeak"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Pronounce"
+                android:src="@drawable/ic_volume" />
+
+            <ImageButton
+                android:id="@+id/glossClose"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Close"
+                android:src="@drawable/ic_close" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/glossMeta"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="13sp" />
+
+        <TextView
+            android:id="@+id/glossTranslation"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textSize="17sp" />
+
+        <TextView
+            android:id="@+id/glossContext"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/glossNote"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:textSize="13sp"
+            android:textStyle="italic" />
+
+        <LinearLayout
+            android:id="@+id/glossLoading"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:paddingVertical="4dp">
+
+            <ProgressBar
+                android:id="@+id/glossProgress"
+                style="?android:attr/progressBarStyleSmall"
+                android:layout_width="18dp"
+                android:layout_height="18dp"
+                android:layout_marginEnd="8dp" />
+
+            <TextView
+                android:id="@+id/glossStatus"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:textSize="14sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="40dp"
+            android:layout_marginTop="4dp"
+            android:gravity="center_vertical">
+
+            <TextView android:id="@+id/glossLearning" style="@style/GlossButton" android:text="☆ Learning" />
+            <TextView android:id="@+id/glossKnown" style="@style/GlossButton" android:text="✓ Known" />
+            <TextView android:id="@+id/glossMore" style="@style/GlossButton" android:text="More…" />
         </LinearLayout>
     </LinearLayout>
 
@@ -221,6 +368,7 @@
                 <TextView android:id="@+id/selSave" style="@style/SelectionAction" android:text="Save word" />
                 <TextView android:id="@+id/selAsk" style="@style/SelectionAction" android:text="Ask AI" />
                 <TextView android:id="@+id/selChatgpt" style="@style/SelectionAction" android:text="ChatGPT" />
+                <TextView android:id="@+id/selListen" style="@style/SelectionAction" android:text="Listen" />
                 <TextView android:id="@+id/selCopy" style="@style/SelectionAction" android:text="Copy" />
             </LinearLayout>
         </HorizontalScrollView>

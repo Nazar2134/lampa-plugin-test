@@ -92,11 +92,64 @@ class ReaderDb private constructor(context: Context) : SQLiteOpenHelper(context,
         db.execSQL("CREATE INDEX chat_book ON chat(book_id)")
         db.execSQL("CREATE TABLE ai_cache (key TEXT PRIMARY KEY, response TEXT NOT NULL, used INTEGER NOT NULL)")
         db.execSQL("CREATE TABLE usage (id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT NOT NULL, model TEXT NOT NULL, input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL, created INTEGER NOT NULL)")
+        createVersion2(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        // Version 1 is the first schema. Future versions add migrations here, step by step.
+        // Additive steps only, so existing notes, vocabulary and chats are kept.
+        if (oldVersion < 2) createVersion2(db)
     }
+
+    /** Version 2: learning mode. Word statuses per language, and cached word look-ups. */
+    private fun createVersion2(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS words (lang TEXT NOT NULL, form TEXT NOT NULL, status INTEGER NOT NULL, updated INTEGER NOT NULL, PRIMARY KEY (lang, form))")
+        db.execSQL("CREATE TABLE IF NOT EXISTS lexicon (lang TEXT NOT NULL, form TEXT NOT NULL, lemma TEXT NOT NULL, json TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY (lang, form))")
+    }
+
+    // --- Learning: word statuses and look-ups ---
+
+    /** Every word with a status in [lang]: lower-case form → status. */
+    fun wordStatuses(lang: String): Map<String, Int> =
+        query("SELECT form, status FROM words WHERE lang = ?", lang) { it.str("form") to it.int("status") }.toMap()
+
+    /** Sets [status] for [forms]; [WordStatus.NEW] removes them. */
+    fun setWordStatus(lang: String, forms: Collection<String>, status: Int) {
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            for (form in forms) {
+                if (status == WordStatus.NEW) {
+                    db.delete("words", "lang = ? AND form = ?", arrayOf(lang, form))
+                } else {
+                    db.insertWithOnConflict("words", null, ContentValues().apply {
+                        put("lang", lang); put("form", form); put("status", status); put("updated", System.currentTimeMillis())
+                    }, SQLiteDatabase.CONFLICT_REPLACE)
+                }
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    /** Marks [form] known in every language where it is being learnt. */
+    fun promoteLearningWord(form: String) {
+        writableDatabase.update("words", ContentValues().apply { put("status", WordStatus.KNOWN); put("updated", System.currentTimeMillis()) },
+            "form = ? AND status = ?", arrayOf(form, WordStatus.LEARNING.toString()))
+    }
+
+    fun lexicon(lang: String, form: String): String? =
+        query("SELECT json FROM lexicon WHERE lang = ? AND form = ?", lang, form) { it.str("json") }.firstOrNull()
+
+    fun saveLexicon(lang: String, form: String, lemma: String, json: String) {
+        writableDatabase.insertWithOnConflict("lexicon", null, ContentValues().apply {
+            put("lang", lang); put("form", form); put("lemma", lemma); put("json", json); put("created", System.currentTimeMillis())
+        }, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    /** Word form → dictionary form, for every looked-up word in [lang]. */
+    fun lemmas(lang: String): Map<String, String> =
+        query("SELECT form, lemma FROM lexicon WHERE lang = ? AND lemma != ''", lang) { it.str("form") to it.str("lemma") }.toMap()
 
     // --- Bookmarks ---
 
@@ -246,7 +299,7 @@ class ReaderDb private constructor(context: Context) : SQLiteOpenHelper(context,
 
     companion object {
         const val NAME = "reader.db"
-        const val VERSION = 1
+        const val VERSION = 2
         private const val CACHE_SIZE = 400
 
         @Volatile private var instance: ReaderDb? = null
@@ -258,6 +311,7 @@ class ReaderDb private constructor(context: Context) : SQLiteOpenHelper(context,
         internal fun reset() = synchronized(this) {
             instance?.close()
             instance = null
+            WordStore.reset()
         }
 
         fun cacheKey(vararg parts: String): String =

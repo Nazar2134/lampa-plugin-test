@@ -109,3 +109,9 @@ body pre { white-space: pre-wrap; font-size: 0.85em; }
 
 /* Text selection: clearer than the default, in every theme */
 ::selection { background: color-mix(in srgb, var(--accent) 38%, transparent); color: inherit; }
+
+/* Learning mode (see reader.js) */
+::highlight(reader-learning) { background-color: rgba(240, 170, 20, 0.22); text-decoration: underline; text-decoration-color: rgba(220, 140, 0, 0.75); text-decoration-thickness: 2px; text-underline-offset: 3px; }
+::highlight(reader-new) { text-decoration: underline dotted; text-decoration-color: color-mix(in srgb, var(--accent) 55%, transparent); text-decoration-thickness: 1.5px; text-underline-offset: 3px; }
+::highlight(reader-tap) { background-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+::highlight(reader-speaking) { background-color: rgba(70, 150, 255, 0.22); }

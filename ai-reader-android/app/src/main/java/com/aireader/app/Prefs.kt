@@ -101,6 +101,21 @@ class Prefs(context: Context) {
 
     fun saveDeepseekModel(model: String) = sp.edit().putString("deepseek_model", model).apply()
 
+    /** Learning mode: tap a word for its meaning, words being learnt tinted, new words counted per page. */
+    var learningMode: Boolean
+        get() = sp.getBoolean("learning_mode", false)
+        set(value) = sp.edit().putBoolean("learning_mode", value).apply()
+
+    /** In learning mode, also underline words not looked at yet. */
+    var underlineNew: Boolean
+        get() = sp.getBoolean("underline_new", false)
+        set(value) = sp.edit().putBoolean("underline_new", value).apply()
+
+    /** Reading-aloud speed, 1.0 = normal. */
+    var speechRate: Float
+        get() = sp.getFloat("speech_rate", 1f)
+        set(value) = sp.edit().putFloat("speech_rate", value).apply()
+
     fun position(bookId: String) = ReadingPosition(
         chapter = sp.getInt("pos_chapter_$bookId", 0),
         fraction = sp.getFloat("pos_fraction_$bookId", 0f),

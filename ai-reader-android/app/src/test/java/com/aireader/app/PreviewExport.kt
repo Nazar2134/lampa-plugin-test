@@ -78,6 +78,11 @@ class PreviewExport {
                 .replace("<h1", "<img src=\"https://evil.example/track.png\"/><script>window.evil2 = 1;</script><h1")
             write("epub", "OEBPS/Text/hostile.xhtml", hostile, sepia, phone, emptyInit(), "hostile")
 
+            // Learning mode: "Garten" being learnt, a few function words known, new words underlined.
+            write("epub", "OEBPS/Text/learning.xhtml", chapter1, sepia, phone,
+                emptyInit().put("learning", JSONObject().put("enabled", true).put("underlineNew", true)
+                    .put("statuses", JSONObject().put("garten", 1).put("der", 2).put("die", 2).put("und", 2).put("sie", 2))), "learning")
+
             // Tablet in landscape: two columns per screen, left-aligned, sans, wide spacing.
             write("epub", "OEBPS/Text/tablet.xhtml", chapter1, AppSettings(fontSize = 20, font = ReaderFont.SANS, justify = false, lineHeight = 1.8f),
                 ChapterRenderer.Layout(padTop = 30, padBottom = 40, padX = 32, columns = 2), emptyInit(), "tablet")

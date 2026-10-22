@@ -4,7 +4,8 @@
   var init = window.READER_INIT || {};
   var A = window.Android || {
     onPage: function () {}, onTap: function () {}, nextChapter: function () {}, prevChapter: function () {},
-    openLink: function () {}, openExternal: function () {}, onHighlightTap: function () {}, onSelectionChanged: function () {}
+    openLink: function () {}, openExternal: function () {}, onHighlightTap: function () {}, onSelectionChanged: function () {},
+    onWordTap: function () {}, onWordStats: function () {}
   };
   var root = document.documentElement;
   root.style.visibility = 'hidden';
@@ -204,6 +205,7 @@
   function report() {
     var anchor = pageAnchor();
     A.onPage(page, count, anchor ? JSON.stringify(anchor) : '', currentBookmark());
+    reportWordStats();
   }
 
   // The page's scroll position. Anything else that moves it (selection handles dragged to the edge,
@@ -303,6 +305,7 @@
     if (ready) return;
     ready = true;
     setMarks(init.marks);
+    applyLearning();
     measure();
     var p = 0, target = init.target || null, range = null;
     if (init.atEnd) p = count - 1;
@@ -466,6 +469,10 @@
     if (g && g.duration > TAP_MS) return; // a press, not a tap (e.g. a long press that didn't select)
     var hl = highlightAt(e.clientX, e.clientY);
     if (hl) { A.onHighlightTap(hl.id); return; }
+    if (learning && learning.enabled) {
+      var w = wordAt(e.clientX, e.clientY);
+      if (w) { tapWord(w); return; }
+    }
     var x = (e.clientX % W) / W;
     if (x < 0.25) prev(); else if (x > 0.75) next(); else A.onTap();
   }, true);
@@ -630,6 +637,171 @@
     return text.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim().slice(0, 4000);
   }
 
+
+  // ---------------------------------------------------------------------------------------------
+  // Learning mode. Words are tokens of the text map; their statuses come from the app (1 = learning,
+  // 2 = known, missing = new). Words being learnt are tinted, new words optionally underlined, a tap on
+  // a word asks the app for its meaning, and each page reports how many new words it has.
+
+  var learning = init.learning || null;
+  var tokens = null;
+  var WORD = /[\p{L}][\p{L}\p{M}'’\-]*/gu;
+
+  function formOf(w) { return w.replace(/^['’\-]+|['’\-]+$/g, '').toLowerCase(); }
+
+  function wordTokens() {
+    if (tokens) return tokens;
+    var t = textMap().text, m;
+    tokens = [];
+    WORD.lastIndex = 0;
+    while ((m = WORD.exec(t))) {
+      var f = formOf(m[0]);
+      if (f) tokens.push({ s: m.index, e: m.index + m[0].length, f: f });
+    }
+    return tokens;
+  }
+
+  // Index of the first token starting at or after text index i.
+  function firstTokenFrom(i) {
+    var tk = wordTokens(), lo = 0, hi = tk.length;
+    while (lo < hi) { var mid = (lo + hi) >> 1; if (tk[mid].s < i) lo = mid + 1; else hi = mid; }
+    return lo;
+  }
+
+  function tokenAt(i) {
+    var tk = wordTokens(), k = firstTokenFrom(i + 1) - 1;
+    return k >= 0 && tk[k].s <= i && i < tk[k].e ? tk[k] : null;
+  }
+
+  function statusOf(f) { return (learning && learning.statuses && learning.statuses[f]) || 0; }
+
+  function applyLearning() {
+    if (!hasHighlightApi) return;
+    var learn = new Highlight(), fresh = new Highlight();
+    if (learning && learning.enabled) {
+      wordTokens().forEach(function (tk) {
+        var st = statusOf(tk.f);
+        if (st === 1) learn.add(rangeAt(tk.s, tk.e - tk.s));
+        else if (st === 0 && learning.underlineNew) fresh.add(rangeAt(tk.s, tk.e - tk.s));
+      });
+    }
+    CSS.highlights.set('reader-learning', learn);
+    CSS.highlights.set('reader-new', fresh);
+  }
+
+  // Text indices [start, end) shown on the current page.
+  function pageSpan() {
+    var m = textMap(), pad = cssNumber('--pad-x', 20), top = cssNumber('--pad-top', 40), bottom = window.innerHeight - cssNumber('--pad-bottom', 40);
+    var start = -1, end = -1, y, pos;
+    for (y = top + 2; y < bottom && start < 0; y += 16) {
+      pos = document.caretRangeFromPoint(pad + 2, y);
+      if (pos && pos.startContainer.nodeType === 3) start = indexOfPoint(pos.startContainer, pos.startOffset);
+    }
+    for (y = bottom - 2; y > top && end < 0; y -= 16) {
+      pos = document.caretRangeFromPoint(W - pad - 2, y);
+      if (pos && pos.startContainer.nodeType === 3) end = indexOfPoint(pos.startContainer, pos.startOffset);
+    }
+    if (start < 0) start = 0;
+    if (end < start || page === count - 1) end = Math.max(end, page === count - 1 ? m.text.length : start);
+    return [start, end];
+  }
+
+  function pageTokens() {
+    var span = pageSpan(), tk = wordTokens(), out = [];
+    for (var k = firstTokenFrom(span[0]); k < tk.length && tk[k].s < span[1]; k++) out.push(tk[k]);
+    return out;
+  }
+
+  function reportWordStats() {
+    if (!learning || !learning.enabled || !ready) return;
+    var total = 0, fresh = 0, learn = 0;
+    pageTokens().forEach(function (tk) {
+      total++;
+      var st = statusOf(tk.f);
+      if (st === 0) fresh++; else if (st === 1) learn++;
+    });
+    A.onWordStats(total, fresh, learn);
+  }
+
+  function newWordsOnPage() {
+    var seen = {}, out = [];
+    pageTokens().forEach(function (tk) { if (statusOf(tk.f) === 0 && !seen[tk.f]) { seen[tk.f] = 1; out.push(tk.f); } });
+    return out;
+  }
+
+  // Sentence bounds (text indices) around [a, b), within its block element.
+  function sentenceBounds(a, b, blk) {
+    var t = textMap().text;
+    while (a > blk.a && !/[.!?…]["»”’)]? $/.test(t.slice(Math.max(blk.a, a - 3), a))) a--;
+    while (b < blk.b && !(/[.!?…]/.test(t.charAt(b - 1)) && (b === blk.b || /[ "»”’)]/.test(t.charAt(b))))) b++;
+    while (b < blk.b && /["»”’)]/.test(t.charAt(b))) b++;
+    return [a, b];
+  }
+
+  function wordAt(x, y) {
+    var pos = document.caretRangeFromPoint(x, y);
+    if (!pos || pos.startContainer.nodeType !== 3) return null;
+    var i = indexOfPoint(pos.startContainer, pos.startOffset);
+    var tk = tokenAt(i) || tokenAt(i - 1);
+    if (!tk) return null;
+    var r = rangeAt(tk.s, tk.e - tk.s), rects = r.getClientRects();
+    for (var k = 0; k < rects.length; k++) {
+      var b = rects[k];
+      if (x >= b.left - 3 && x <= b.right + 3 && y >= b.top - 3 && y <= b.bottom + 3) return { token: tk, range: r, rect: b };
+    }
+    return null;
+  }
+
+  function tapWord(w) {
+    var t = textMap().text, word = t.slice(w.token.s, w.token.e);
+    var sb = sentenceBounds(w.token.s, w.token.e, blockIndices(w.range));
+    if (hasHighlightApi) CSS.highlights.set('reader-tap', new Highlight(w.range));
+    A.onWordTap(JSON.stringify({
+      word: word, form: w.token.f, sentence: t.slice(sb[0], sb[1]).trim(),
+      top: Math.round(w.rect.top), bottom: Math.round(w.rect.bottom),
+      occurrence: occurrencesBefore(word, w.token.s)
+    }));
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Reading aloud: sentences from the top of the current page to the end of the chapter; the one being
+  // spoken is highlighted and its page shown.
+
+  var spokenSentences = [];
+
+  function sentencesFromPage() {
+    var t = textMap().text, start = pageSpan()[0], out = [];
+    var blocks = Array.prototype.filter.call(document.body.querySelectorAll('p,h1,h2,h3,h4,h5,h6,li,dd,dt,figcaption,pre,td,blockquote,div'), function (el) {
+      return !el.querySelector('p,h1,h2,h3,h4,h5,h6,li,dd,dt,figcaption,pre,td,blockquote,div');
+    });
+    blocks.forEach(function (el) {
+      var all = document.createRange();
+      all.selectNodeContents(el);
+      var blk = { a: indexOfPoint(all.startContainer, all.startOffset), b: indexOfPoint(all.endContainer, all.endOffset) };
+      var a = blk.a;
+      while (a < blk.b && out.length < 600) {
+        while (a < blk.b && t.charAt(a) === ' ') a++;
+        if (a >= blk.b) break;
+        var b = sentenceBounds(a, a + 1, blk)[1];
+        if (b <= a) b = blk.b;
+        if (b > start) out.push({ s: Math.max(a, start), e: b, text: t.slice(Math.max(a, start), b).trim() });
+        a = b;
+      }
+    });
+    out = out.filter(function (x) { return x.text && /[\p{L}\p{N}]/u.test(x.text); });
+    spokenSentences = out;
+    return out.map(function (x) { return x.text; });
+  }
+
+  function speaking(i) {
+    var x = spokenSentences[i];
+    if (!x || !hasHighlightApi) return;
+    var r = rangeAt(x.s, x.e - x.s);
+    CSS.highlights.set('reader-speaking', new Highlight(r));
+    var p = pageOfRange(r);
+    if (p !== page) slideTo(p, 260);
+  }
+
   window.reader = {
     next: next,
     prev: prev,
@@ -640,6 +812,20 @@
     nudgeSelection: function (edge, dir) { return nudgeSelection(edge, dir); },
     selectedText: function () { var s = window.getSelection(); return s ? normalize(s.toString()).trim() : ''; },
     hideResumeMarker: hideResumeMarker,
+    setLearning: function (json) { learning = typeof json === 'string' ? JSON.parse(json) : json; applyLearning(); reportWordStats(); },
+    setWordStatuses: function (json) {
+      var delta = typeof json === 'string' ? JSON.parse(json) : json;
+      if (!learning) return;
+      learning.statuses = learning.statuses || {};
+      Object.keys(delta).forEach(function (f) { if (delta[f]) learning.statuses[f] = delta[f]; else delete learning.statuses[f]; });
+      applyLearning();
+      reportWordStats();
+    },
+    newWordsOnPage: function () { return JSON.stringify(newWordsOnPage()); },
+    clearTap: function () { if (hasHighlightApi) CSS.highlights.delete('reader-tap'); },
+    sentencesFromPage: function () { return JSON.stringify(sentencesFromPage()); },
+    speaking: speaking,
+    stopSpeaking: function () { if (hasHighlightApi) CSS.highlights.delete('reader-speaking'); },
     pageText: pageText,
     pageAnchor: function () { var a = pageAnchor(); return a ? JSON.stringify(a) : ''; },
     setMarks: function (json) { setMarks(typeof json === 'string' ? JSON.parse(json) : json); report(); },

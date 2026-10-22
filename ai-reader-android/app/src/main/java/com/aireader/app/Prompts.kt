@@ -123,6 +123,23 @@ object Prompts {
         Sentence: $sentence
     """.trimIndent()
 
+    /** Asks for a compact JSON description of a tapped word, in context, for the learning-mode card. */
+    fun gloss(word: String, sentence: String, bookLanguage: String?, s: AppSettings): String = """
+        A reader learning ${bookLanguage ?: "this language"} tapped a word in a book. Describe it as used in the sentence. Reply with only a JSON object, no other text:
+        {"expression": "the word, or the whole unit it belongs to in this sentence: a phrasal verb, an idiom, or a German separable verb with its prefix (e.g. \"anfangen\" for \"fing … an\")",
+         "lemma": "dictionary form",
+         "pos": "part of speech, in ${s.language}",
+         "article": "der, die or das for German nouns, otherwise empty",
+         "plural": "plural of nouns (German with its article, e.g. \"die Häuser\"), otherwise empty",
+         "forms": "principal parts of verbs (German: \"geht, ging, ist gegangen\"; English irregular verbs: \"go, went, gone\"), otherwise empty",
+         "translation": "1–3 short ${s.language} translations of the dictionary meaning",
+         "in_context": "what it means in this sentence, in ${s.language}, a few words",
+         "note": "one short ${s.language} note only if useful (false friend, register, case it governs, separable verb), otherwise empty"}
+
+        Word: $word
+        Sentence: $sentence
+    """.trimIndent()
+
     /** A self-contained message for the Claude or ChatGPT app, which knows nothing about the book. */
     fun handoff(book: BookInfo, s: AppSettings, r: AiRequest, pageText: String): String {
         val reading = "I'm reading \"${book.title}\"" + (if (book.author.isNotBlank()) " by ${book.author}" else "") + "."

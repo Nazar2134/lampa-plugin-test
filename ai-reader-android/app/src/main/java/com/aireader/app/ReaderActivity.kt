@@ -10,7 +10,13 @@ import android.content.res.Configuration
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
+import android.graphics.Typeface
+import android.speech.tts.TextToSpeech
 import android.text.InputType
+import android.text.SpannableStringBuilder
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
+import android.text.style.StyleSpan
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
@@ -34,6 +40,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
 import java.io.ByteArrayInputStream
+import java.util.Locale
 import kotlin.concurrent.thread
 
 class ReaderActivity : Activity(), AiHost {
@@ -72,6 +79,24 @@ class ReaderActivity : Activity(), AiHost {
     private lateinit var selectionBar: LinearLayout
     private lateinit var backToPlace: LinearLayout
     private lateinit var ai: AiPanel
+    private lateinit var glossCard: LinearLayout
+    private lateinit var speakBar: TextView
+
+    // Learning mode
+    @Volatile private var learningOn = false
+    /** The book's language code ("de", "en"…), once known. */
+    @Volatile private var learnLang: String? = null
+    private class WordStats(val total: Int, val fresh: Int, val learning: Int)
+    private var wordStats: WordStats? = null
+    /** A word tapped in learning mode, as reported by reader.js. */
+    private class TappedWord(val word: String, val form: String, val sentence: String, val top: Int, val bottom: Int, val occurrence: Int)
+    private var tapped: TappedWord? = null
+    private var gloss: Gloss? = null
+    private var glossGeneration = 0
+
+    // Pronunciation and reading aloud; the speech engine starts on first use.
+    private var speechEngine: Speech? = null
+    private var readAloudOnLoad = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -102,8 +127,11 @@ class ReaderActivity : Activity(), AiHost {
         bookmarkButton = findViewById(R.id.bookmark)
         selectionBar = findViewById(R.id.selectionBar)
         backToPlace = findViewById(R.id.backToPlace)
+        glossCard = findViewById(R.id.glossCard)
+        speakBar = findViewById(R.id.speakBar)
         ai = AiPanel(this, this)
         ai.onClosed = { updateBackToPlace() }
+        learningOn = prefs.learningMode
         bookTitle.text = entry.title
 
         topBar.setOnApplyWindowInsetsListener { v, insets ->
@@ -114,6 +142,7 @@ class ReaderActivity : Activity(), AiHost {
         setUpWebView()
         setUpBars()
         setUpSelectionBar()
+        setUpLearning()
         applyTheme()
         setBarsVisible(false)
 
@@ -151,6 +180,8 @@ class ReaderActivity : Activity(), AiHost {
     }
 
     override fun onDestroy() {
+        speechEngine?.shutdown()
+        speechEngine = null
         if (::bookId.isInitialized && !isChangingConfigurations) BookSession.close(bookId)
         super.onDestroy()
     }
@@ -216,6 +247,7 @@ class ReaderActivity : Activity(), AiHost {
         if (!resource.isChapter) return WebResourceResponse(resource.mime, null, ByteArrayInputStream(resource.bytes))
         val index = b.chapterIndexForPath(path) ?: chapter
         val init = JSONObject(pendingInit).put("marks", marksJson(index))
+        if (learningOn) init.put("learning", learningJson(String(resource.bytes, Charsets.UTF_8)))
         val nonce = ChapterRenderer.newNonce()
         val html = ChapterRenderer.prepare(String(resource.bytes, Charsets.UTF_8), ChapterRenderer.head(settings, layout, init.toString(), nonce), nonce)
         return WebResourceResponse(
@@ -267,6 +299,8 @@ class ReaderActivity : Activity(), AiHost {
         if (resume) init.put("resume", JSONObject().put("label", "You stopped here"))
         pendingInit = init.toString()
         hideSelectionBar()
+        hideWordCard()
+        wordStats = null
         web.loadUrl(b.chapterUrl(chapter))
         updateStatus()
     }
@@ -329,7 +363,15 @@ class ReaderActivity : Activity(), AiHost {
         val b = book ?: return
         val fraction = if (pageCount > 0) page.toFloat() / pageCount else 0f
         val percent = (progress(fraction) * 100).toInt()
-        status.text = "${b.chapterTitle(chapter)}  ·  ${page + 1} / $pageCount  ·  $percent%"
+        val stats = wordStats?.takeIf { learningOn && it.total > 0 }
+        status.text = if (stats != null) {
+            // Learning mode: how much of this page is new.
+            val familiar = (stats.total - stats.fresh) * 100 / stats.total
+            "${page + 1} / $pageCount  ·  $percent%  ·  ${if (stats.fresh == 1) "1 new word" else "${stats.fresh} new words"}  ·  $familiar% familiar"
+        } else {
+            "${b.chapterTitle(chapter)}  ·  ${page + 1} / $pageCount  ·  $percent%"
+        }
+        status.isClickable = stats != null && stats.fresh > 0
         bookmarkButton.setImageResource(if (currentBookmark != 0L) R.drawable.ic_bookmark_filled else R.drawable.ic_bookmark)
         bookmarkButton.contentDescription = if (currentBookmark != 0L) "Remove bookmark" else "Bookmark this page"
     }
@@ -370,7 +412,8 @@ class ReaderActivity : Activity(), AiHost {
     }
 
     private fun updateBackToPlace() {
-        backToPlace.visibility = if (jumps.isNotEmpty() && selectionBar.visibility != View.VISIBLE && !ai.isOpen) View.VISIBLE else View.GONE
+        val free = selectionBar.visibility != View.VISIBLE && !ai.isOpen && glossCard.visibility != View.VISIBLE
+        backToPlace.visibility = if (jumps.isNotEmpty() && free && speakBar.visibility != View.VISIBLE) View.VISIBLE else View.GONE
     }
 
     // --- Selection bar ---
@@ -398,6 +441,7 @@ class ReaderActivity : Activity(), AiHost {
                 Handoff.send(this, Handoff.Target.CHATGPT, Prompts.handoff(bookInfo(), prefs.load(), request, ""), settings.theme)
             }
         }
+        findViewById<View>(R.id.selListen).setOnClickListener { withSelection { sel -> speech().say(sel.text, learningLanguage(), prefs.speechRate) } }
         findViewById<View>(R.id.selCopy).setOnClickListener {
             withSelection { sel ->
                 getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(android.content.ClipData.newPlainText("Text", sel.text))
@@ -414,11 +458,19 @@ class ReaderActivity : Activity(), AiHost {
     /** Shows the selection bar on the opposite half of the screen from the selection ([top]/[bottom] in CSS px). */
     private fun showSelectionBar(top: Int, bottom: Int) {
         if (ai.isOpen) return
+        hideWordCard()
+        placeOpposite(selectionBar, top, bottom)
+        selectionBar.visibility = View.VISIBLE
+        updateBackToPlace()
+    }
+
+    /** Puts [bar] on the opposite half of the screen from the text between [top] and [bottom] (CSS px). */
+    private fun placeOpposite(bar: View, top: Int, bottom: Int) {
         val density = resources.displayMetrics.density
         val heightDp = root.height / density
-        val params = selectionBar.layoutParams as FrameLayout.LayoutParams
-        val selectionLow = (top + bottom) / 2f > heightDp * 0.5f
-        if (selectionLow) {
+        val params = bar.layoutParams as FrameLayout.LayoutParams
+        val textLow = (top + bottom) / 2f > heightDp * 0.5f
+        if (textLow) {
             val inset = window.decorView.rootWindowInsets?.getInsetsIgnoringVisibility(WindowInsets.Type.statusBars() or WindowInsets.Type.displayCutout())?.top ?: 0
             params.gravity = Gravity.TOP
             params.topMargin = inset + (8 * density).toInt()
@@ -428,14 +480,325 @@ class ReaderActivity : Activity(), AiHost {
             params.topMargin = 0
             params.bottomMargin = (30 * density).toInt()
         }
-        selectionBar.layoutParams = params
-        selectionBar.visibility = View.VISIBLE
-        updateBackToPlace()
+        bar.layoutParams = params
     }
 
     private fun hideSelectionBar() {
         selectionBar.visibility = View.GONE
         updateBackToPlace()
+    }
+
+    // --- Learning mode: tap a word, word statuses, pronunciation, reading aloud ---
+
+    private fun setUpLearning() {
+        findViewById<View>(R.id.glossClose).setOnClickListener { hideWordCard() }
+        findViewById<View>(R.id.glossSpeak).apply {
+            setOnClickListener { tapped?.let { speech().say(it.word, learningLanguage(), prefs.speechRate) } }
+            setOnLongClickListener { tapped?.let { speech().say(it.sentence, learningLanguage(), prefs.speechRate) }; true }
+        }
+        findViewById<View>(R.id.glossLearning).setOnClickListener { setTappedStatus(WordStatus.LEARNING) }
+        findViewById<View>(R.id.glossKnown).setOnClickListener { setTappedStatus(WordStatus.KNOWN) }
+        findViewById<View>(R.id.glossMore).setOnClickListener {
+            val t = tapped ?: return@setOnClickListener
+            openAi(AiAction.VOCABULARY, Selection(t.word, t.sentence, t.sentence, chapter, t.occurrence))
+        }
+        status.setOnClickListener { markPageKnown() }
+        status.isClickable = false
+        speakBar.setOnClickListener { stopReadAloud() }
+    }
+
+    /** The book's language for word statuses and voices: from its metadata, else guessed from its text. */
+    private fun learningLanguage(chapterHtml: String? = null): String {
+        learnLang?.let { return it }
+        val b = book ?: return ""
+        val lang = LanguageGuess.ofMetadata(b.language)
+            .ifEmpty { session?.text?.let { LanguageGuess.of(null, it) }.orEmpty() }
+            .ifEmpty { chapterHtml?.let { LanguageGuess.ofText(it.replace(Regex("<[^>]*>"), " ")) }.orEmpty() }
+        if (lang.isNotEmpty()) learnLang = lang
+        return lang
+    }
+
+    private fun languageName(): String? = book?.languageName
+        ?: learningLanguage().takeIf { it.isNotEmpty() }?.let { Locale.forLanguageTag(it).getDisplayLanguage(Locale.ENGLISH) }
+
+    private fun wordStore(chapterHtml: String? = null) = WordStore.get(this, learningLanguage(chapterHtml))
+
+    /** What reader.js needs for learning mode: whether it's on, and the status of every word that isn't new. */
+    private fun learningJson(chapterHtml: String? = null): JSONObject =
+        JSONObject().put("enabled", true).put("underlineNew", prefs.underlineNew).put("statuses", JSONObject(wordStore(chapterHtml).pageStatuses() as Map<*, *>))
+
+    private fun pushLearning() {
+        val json = if (learningOn) learningJson() else JSONObject().put("enabled", false)
+        web.evaluateJavascript("window.reader && reader.setLearning(${JSONObject.quote(json.toString())})", null)
+    }
+
+    private fun setLearning(on: Boolean, underlineNew: Boolean = prefs.underlineNew) {
+        val first = on && !learningOn
+        prefs.learningMode = on
+        prefs.underlineNew = underlineNew
+        learningOn = on
+        if (!on) {
+            hideWordCard()
+            wordStats = null
+        }
+        applyTheme()
+        pushLearning()
+        updateStatus()
+        if (first) Toast.makeText(this, "Tap any word to see what it means", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun showWordCard(t: TappedWord) {
+        if (ai.isOpen || book == null) return
+        tapped = t
+        gloss = null
+        val gen = ++glossGeneration
+        findViewById<TextView>(R.id.glossHeadword).text = t.word
+        for (id in listOf(R.id.glossMeta, R.id.glossTranslation, R.id.glossContext, R.id.glossNote)) findViewById<View>(id).visibility = View.GONE
+        showGlossStatus("Looking up…", busy = true)
+        updateGlossButtons()
+        placeOpposite(glossCard, t.top, t.bottom)
+        glossCard.visibility = View.VISIBLE
+        updateBackToPlace()
+        thread(isDaemon = true) {
+            val store = wordStore()
+            val cached = store.cachedGloss(t.form)
+            val settings = prefs.load()
+            val sameSentence = cached != null && (cached.sentence.isBlank() || cached.sentence == t.sentence)
+            runOnUiThread {
+                if (gen != glossGeneration) return@runOnUiThread
+                when {
+                    cached != null && (sameSentence || Ai.key(settings).isBlank()) -> showGloss(cached, otherSentence = false)
+                    cached != null -> showGloss(cached, otherSentence = true)
+                    Ai.key(settings).isBlank() -> showGlossStatus("Meanings come from your AI key. Tap More… to add one (DeepSeek, or a free Gemini key).", busy = false)
+                    else -> lookUp(t, gen)
+                }
+            }
+        }
+    }
+
+    /** Asks the AI what the tapped word means in its sentence, and keeps the answer for next time. */
+    private fun lookUp(t: TappedWord, gen: Int) {
+        showGlossStatus("Looking up…", busy = true)
+        val settings = prefs.load()
+        val provider = settings.provider
+        val language = languageName()
+        thread(isDaemon = true) {
+            val reply = StringBuilder()
+            val outcome = runCatching {
+                val result = Ai.stream(
+                    settings, "You are a concise dictionary for language learners. Reply with JSON only.",
+                    listOf(Turn(true, Prompts.gloss(t.word, t.sentence, language, settings))), onConnect = {}, isCancelled = { gen != glossGeneration },
+                ) { reply.append(it) }
+                if (result.inputTokens + result.outputTokens > 0) db.addUsage(provider, Ai.model(settings), result.inputTokens, result.outputTokens)
+                Gloss.parse(t.word, reply.toString())?.copy(sentence = t.sentence)?.also { wordStore().saveGloss(t.form, it) }
+            }
+            runOnUiThread {
+                if (gen != glossGeneration) return@runOnUiThread
+                outcome.onSuccess { g ->
+                    if (g != null) showGloss(g, otherSentence = false)
+                    else showGlossStatus("Couldn't read the answer. Tap More… for a full explanation.", busy = false)
+                }.onFailure { e ->
+                    showGlossStatus(
+                        if (Ai.isKeyProblem(provider, e)) "${Ai.name(provider)} didn't accept your key. Tap More… to enter another one."
+                        else Ai.describe(provider, e),
+                        busy = false,
+                    )
+                }
+            }
+        }
+    }
+
+    private fun showGlossStatus(text: String, busy: Boolean, onClick: (() -> Unit)? = null) {
+        findViewById<View>(R.id.glossLoading).visibility = View.VISIBLE
+        findViewById<View>(R.id.glossProgress).visibility = if (busy) View.VISIBLE else View.GONE
+        findViewById<TextView>(R.id.glossStatus).apply {
+            this.text = text
+            setOnClickListener(onClick?.let { { _: View -> it() } })
+            isClickable = onClick != null
+            setTextColor(if (onClick != null) settings.theme.accent else settings.theme.muted)
+        }
+    }
+
+    /** Fills the word card. [otherSentence]: the saved look-up was made in a different sentence. */
+    private fun showGloss(g: Gloss, otherSentence: Boolean) {
+        val t = tapped ?: return
+        gloss = g
+        val t2 = settings.theme
+        val head = SpannableStringBuilder(g.headword)
+        if (g.article.isNotBlank() && g.headword.startsWith(g.article)) {
+            head.setSpan(ForegroundColorSpan(articleColor(g.article, t2.isDark)), 0, g.article.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+        if (!g.headword.equals(t.word, ignoreCase = true)) {
+            val from = head.length
+            head.append("   ").append(t.word)
+            head.setSpan(ForegroundColorSpan(t2.muted), from, head.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            head.setSpan(StyleSpan(Typeface.NORMAL), from, head.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            head.setSpan(android.text.style.RelativeSizeSpan(0.7f), from, head.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+        findViewById<TextView>(R.id.glossHeadword).text = head
+        fun set(id: Int, text: String) = findViewById<TextView>(id).apply {
+            this.text = text
+            visibility = if (text.isBlank()) View.GONE else View.VISIBLE
+        }
+        set(R.id.glossMeta, listOf(g.pos, g.forms, g.plural.takeIf { it.isNotBlank() }?.let { "pl. $it" }.orEmpty()).filter { it.isNotBlank() }.joinToString("  ·  "))
+        set(R.id.glossTranslation, g.translation)
+        set(R.id.glossContext, if (otherSentence || g.inContext.isBlank() || g.inContext.equals(g.translation, ignoreCase = true)) "" else "Here: ${g.inContext}")
+        set(R.id.glossNote, g.note)
+        if (otherSentence) {
+            showGlossStatus("Saved from another sentence. Check this one ↻", busy = false) { lookUp(t, glossGeneration) }
+        } else {
+            findViewById<View>(R.id.glossLoading).visibility = View.GONE
+        }
+        updateGlossButtons()
+    }
+
+    /** German genders in the usual learner colours: der blue, die red, das green. */
+    private fun articleColor(article: String, dark: Boolean): Int = when (article) {
+        "der" -> if (dark) 0xFF7AB0FF.toInt() else 0xFF2563C9.toInt()
+        "die" -> if (dark) 0xFFFF8A80.toInt() else 0xFFC62828.toInt()
+        else -> if (dark) 0xFF7BD88F.toInt() else 0xFF2E7D32.toInt()
+    }
+
+    private fun updateGlossButtons() {
+        val t = tapped ?: return
+        val current = wordStore().status(t.form)
+        val theme = settings.theme
+        val density = resources.displayMetrics.density
+        for ((id, value) in listOf(R.id.glossLearning to WordStatus.LEARNING, R.id.glossKnown to WordStatus.KNOWN, R.id.glossMore to -1)) {
+            val on = value == current
+            findViewById<TextView>(id).apply {
+                setTextColor(if (on) 0xFFFFFFFF.toInt() else theme.accent)
+                isSelected = on
+                background = GradientDrawable().apply {
+                    cornerRadius = 12 * density
+                    setColor(if (on) theme.accent else (theme.accent and 0x00FFFFFF) or 0x1A000000)
+                }
+            }
+        }
+        findViewById<TextView>(R.id.glossLearning).text = if (current == WordStatus.LEARNING) "★ Learning" else "☆ Learning"
+    }
+
+    /** Marks the tapped word as being learnt (and saves it to the vocabulary) or known; tapping again makes it new. */
+    private fun setTappedStatus(status: Int) {
+        val t = tapped ?: return
+        val store = wordStore()
+        val g = gloss
+        val next = if (store.status(t.form) == status) WordStatus.NEW else status
+        store.setStatus(t.form, next, g?.lemma)
+        if (next == WordStatus.LEARNING) {
+            val explanation = g?.let {
+                listOf(listOf(it.headword, it.pos).filter { s -> s.isNotBlank() }.joinToString(", "), it.forms, it.plural.takeIf { p -> p.isNotBlank() }?.let { p -> "pl. $p" }.orEmpty(), it.inContext)
+                    .filter { s -> s.isNotBlank() }.joinToString(" — ")
+            }.orEmpty()
+            Vocabulary.save(this, WordSource(t.word, t.sentence, bookId, bookInfo().title, chapter, book?.chapterTitle(chapter).orEmpty(), t.occurrence),
+                explanation = explanation, translation = g?.translation.orEmpty())
+        }
+        pushLearning()
+        if (next == WordStatus.KNOWN) hideWordCard() else updateGlossButtons()
+    }
+
+    private fun hideWordCard() {
+        if (!::glossCard.isInitialized) return
+        glossGeneration++
+        if (glossCard.visibility == View.VISIBLE) {
+            glossCard.visibility = View.GONE
+            web.evaluateJavascript("window.reader && reader.clearTap()", null)
+        }
+        tapped = null
+        gloss = null
+        updateBackToPlace()
+    }
+
+    /** Lists the new words on the page so the ones the reader already knows can be marked in one go. */
+    private fun markPageKnown() {
+        if (!learningOn) return
+        web.evaluateJavascript("reader.newWordsOnPage()") { result ->
+            val words = runCatching { JSONArray(JSONTokener(result).nextValue() as String) }.getOrNull()
+                ?.let { a -> (0 until a.length()).map { a.getString(it) } }.orEmpty()
+            if (words.isEmpty()) return@evaluateJavascript
+            val checked = BooleanArray(words.size) { true }
+            AlertDialog.Builder(this)
+                .setTitle("Which of these do you know?")
+                .setMultiChoiceItems(words.toTypedArray(), checked) { _, i, on -> checked[i] = on }
+                .setPositiveButton("Mark as known") { _, _ ->
+                    wordStore().setStatuses(words.filterIndexed { i, _ -> checked[i] }, WordStatus.KNOWN)
+                    pushLearning()
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+    }
+
+    private fun speech(): Speech = speechEngine ?: Speech(this).also { sp ->
+        speechEngine = sp
+        sp.onSentence = { i -> web.evaluateJavascript("window.reader && reader.speaking($i)", null) }
+        sp.onReadingEnded = { finished ->
+            web.evaluateJavascript("window.reader && reader.stopSpeaking()", null)
+            val b = book
+            if (finished && b != null && chapter < b.chapterCount - 1) {
+                readAloudOnLoad = true
+                openChapter(chapter + 1)
+            } else {
+                showSpeakBar(false)
+            }
+        }
+        sp.onMissingVoice = { locale ->
+            showSpeakBar(false)
+            AlertDialog.Builder(this)
+                .setTitle("No ${locale.getDisplayLanguage(Locale.ENGLISH)} voice")
+                .setMessage("Your phone has no text-to-speech voice for ${locale.getDisplayLanguage(Locale.ENGLISH)} yet. Install one (Settings → Text-to-speech, or Speech Services by Google) and try again.")
+                .setPositiveButton("Install voices") { _, _ ->
+                    runCatching { startActivity(Intent(TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA)) }
+                        .onFailure { Toast.makeText(this, "Open Settings → Text-to-speech to add voices", Toast.LENGTH_LONG).show() }
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+    }
+
+    private fun toggleReadAloud() {
+        if (speechEngine?.isReading == true || speakBar.visibility == View.VISIBLE) stopReadAloud() else startReadAloud()
+    }
+
+    private fun stopReadAloud() {
+        readAloudOnLoad = false
+        speechEngine?.stop()
+        web.evaluateJavascript("window.reader && reader.stopSpeaking()", null)
+        showSpeakBar(false)
+    }
+
+    /** Reads from the top of the current page to the end of the chapter, then carries on in the next one. */
+    private fun startReadAloud() {
+        setBarsVisible(false)
+        hideWordCard()
+        web.evaluateJavascript("reader.sentencesFromPage()") { result ->
+            val sentences = runCatching { JSONArray(JSONTokener(result).nextValue() as String) }.getOrNull()
+                ?.let { a -> (0 until a.length()).map { a.getString(it) } }.orEmpty()
+            val b = book ?: return@evaluateJavascript
+            if (sentences.isEmpty()) {
+                if (chapter < b.chapterCount - 1) {
+                    readAloudOnLoad = true
+                    openChapter(chapter + 1)
+                } else {
+                    showSpeakBar(false)
+                }
+                return@evaluateJavascript
+            }
+            showSpeakBar(true)
+            speech().read(sentences, learningLanguage(), prefs.speechRate)
+        }
+    }
+
+    private fun showSpeakBar(visible: Boolean) {
+        speakBar.visibility = if (visible) View.VISIBLE else View.GONE
+        updateBackToPlace()
+    }
+
+    private fun changeSpeechRate(delta: Float) {
+        prefs.speechRate = ((prefs.speechRate + delta) * 10).let { Math.round(it) / 10f }.coerceIn(0.5f, 2f)
+        applyTheme()
+        // Carry on reading at the new speed.
+        if (speechEngine?.isReading == true) startReadAloud()
     }
 
     // --- AiHost ---
@@ -488,6 +851,7 @@ class ReaderActivity : Activity(), AiHost {
     private fun openAi(action: AiAction, sel: Selection) {
         setBarsVisible(false)
         hideSelectionBar()
+        hideWordCard()
         ai.openForSelection(action, sel)
         updateBackToPlace()
     }
@@ -586,6 +950,7 @@ class ReaderActivity : Activity(), AiHost {
             }
         }
         findViewById<ImageButton>(R.id.askAi).setOnClickListener { askAboutBook() }
+        findViewById<ImageButton>(R.id.readAloud).setOnClickListener { toggleReadAloud() }
         bookmarkButton.setOnClickListener { toggleBookmark() }
 
         val s = { update: (AppSettings) -> AppSettings -> changeStyle(update(settings)) }
@@ -604,6 +969,11 @@ class ReaderActivity : Activity(), AiHost {
         findViewById<View>(R.id.themeLight).setOnClickListener { s { it.copy(theme = ReaderTheme.LIGHT) } }
         findViewById<View>(R.id.themeSepia).setOnClickListener { s { it.copy(theme = ReaderTheme.SEPIA) } }
         findViewById<View>(R.id.themeDark).setOnClickListener { s { it.copy(theme = ReaderTheme.DARK) } }
+        findViewById<View>(R.id.learnOff).setOnClickListener { setLearning(false) }
+        findViewById<View>(R.id.learnOn).setOnClickListener { setLearning(true) }
+        findViewById<View>(R.id.learnUnderline).setOnClickListener { setLearning(true, underlineNew = !(learningOn && prefs.underlineNew)) }
+        findViewById<View>(R.id.rateSlower).setOnClickListener { changeSpeechRate(-0.1f) }
+        findViewById<View>(R.id.rateFaster).setOnClickListener { changeSpeechRate(0.1f) }
     }
 
     private fun placeStylePanel() {
@@ -635,7 +1005,7 @@ class ReaderActivity : Activity(), AiHost {
         status.setTextColor(t.muted)
         bookTitle.setTextColor(t.fg)
         loading.indeterminateTintList = ColorStateList.valueOf(t.accent)
-        for (id in listOf(R.id.back, R.id.toc, R.id.askAi, R.id.bookmark)) findViewById<ImageButton>(id).imageTintList = ColorStateList.valueOf(t.fg)
+        for (id in listOf(R.id.back, R.id.toc, R.id.askAi, R.id.readAloud, R.id.bookmark)) findViewById<ImageButton>(id).imageTintList = ColorStateList.valueOf(t.fg)
         findViewById<TextView>(R.id.style).setTextColor(t.fg)
         stylePanel.background = GradientDrawable().apply {
             setColor(t.bg)
@@ -644,6 +1014,7 @@ class ReaderActivity : Activity(), AiHost {
         }
         findViewById<TextView>(R.id.fontSizeLabel).text = "${settings.fontSize}"
         findViewById<TextView>(R.id.spacingLabel).text = "%.2f".format(settings.lineHeight).trimEnd('0').trimEnd('.')
+        findViewById<TextView>(R.id.rateLabel).text = "%.1f×".format(Locale.US, prefs.speechRate)
         val selected = mapOf(
             R.id.fontSerif to (settings.font == ReaderFont.SERIF), R.id.fontSans to (settings.font == ReaderFont.SANS),
             R.id.fontPublisher to (settings.font == ReaderFont.PUBLISHER),
@@ -652,10 +1023,13 @@ class ReaderActivity : Activity(), AiHost {
             R.id.alignJustify to settings.justify, R.id.alignLeft to !settings.justify,
             R.id.fontSmaller to false, R.id.fontBigger to false, R.id.spacingLess to false, R.id.spacingMore to false,
             R.id.fontSizeLabel to false, R.id.spacingLabel to false,
+            R.id.learnOff to !learningOn, R.id.learnOn to learningOn, R.id.learnUnderline to (learningOn && prefs.underlineNew),
+            R.id.rateSlower to false, R.id.rateFaster to false, R.id.rateLabel to false,
         )
+        val labels = setOf(R.id.fontSizeLabel, R.id.spacingLabel, R.id.rateLabel)
         for ((id, on) in selected) findViewById<TextView>(id).apply {
             setTextColor(if (on) t.accent else t.fg)
-            if (id != R.id.fontSizeLabel && id != R.id.spacingLabel) background = GradientDrawable().apply {
+            if (id !in labels) background = GradientDrawable().apply {
                 cornerRadius = 10 * density
                 setColor(if (on) (t.accent and 0x00FFFFFF) or 0x22000000 else 0)
             }
@@ -686,7 +1060,24 @@ class ReaderActivity : Activity(), AiHost {
             setStroke((1 * density).toInt(), (t.muted and 0x00FFFFFF) or 0x50000000)
         }
         for (id in listOf(R.id.selLeft, R.id.selWord, R.id.selSentence, R.id.selParagraph, R.id.selRight)) findViewById<TextView>(id).setTextColor(t.fg)
-        for (id in listOf(R.id.selExplain, R.id.selTranslate, R.id.selHighlight, R.id.selSave, R.id.selAsk, R.id.selChatgpt, R.id.selCopy)) findViewById<TextView>(id).setTextColor(t.accent)
+        for (id in listOf(R.id.selExplain, R.id.selTranslate, R.id.selHighlight, R.id.selSave, R.id.selAsk, R.id.selChatgpt, R.id.selListen, R.id.selCopy)) findViewById<TextView>(id).setTextColor(t.accent)
+        glossCard.background = GradientDrawable().apply {
+            setColor(if (t == ReaderTheme.LIGHT) 0xFFFAF8F5.toInt() else t.bg)
+            cornerRadius = 16 * density
+            setStroke((1 * density).toInt(), (t.muted and 0x00FFFFFF) or 0x50000000)
+        }
+        findViewById<TextView>(R.id.glossHeadword).setTextColor(t.fg)
+        findViewById<TextView>(R.id.glossTranslation).setTextColor(t.fg)
+        for (id in listOf(R.id.glossMeta, R.id.glossNote)) findViewById<TextView>(id).setTextColor(t.muted)
+        findViewById<TextView>(R.id.glossContext).setTextColor(t.fg)
+        findViewById<TextView>(R.id.glossStatus).setTextColor(t.muted)
+        for (id in listOf(R.id.glossSpeak, R.id.glossClose)) findViewById<ImageButton>(id).imageTintList = ColorStateList.valueOf(t.muted)
+        findViewById<ProgressBar>(R.id.glossProgress).indeterminateTintList = ColorStateList.valueOf(t.accent)
+        updateGlossButtons()
+        speakBar.background = GradientDrawable().apply {
+            setColor(t.accent)
+            cornerRadius = 20 * density
+        }
         findViewById<View>(R.id.selDivider).setBackgroundColor((t.muted and 0x00FFFFFF) or 0x40000000)
         backToPlace.background = GradientDrawable().apply {
             setColor(t.accent)
@@ -748,6 +1139,7 @@ class ReaderActivity : Activity(), AiHost {
         when {
             ai.isOpen -> ai.close()
             stylePanel.visibility == View.VISIBLE -> stylePanel.visibility = View.GONE
+            glossCard.visibility == View.VISIBLE -> hideWordCard()
             selectionBar.visibility == View.VISIBLE -> web.evaluateJavascript("reader.clearSelection()", null)
             jumps.isNotEmpty() -> jumps.removeLast().let {
                 updateBackToPlace()
@@ -761,6 +1153,7 @@ class ReaderActivity : Activity(), AiHost {
     private inner class Bridge {
         @JavascriptInterface
         fun onPage(p: Int, count: Int, anchor: String, bookmark: Long) = runOnUiThread {
+            if (p != page) hideWordCard()
             page = p
             pageCount = count
             pageAnchor = anchor.takeIf { it.isNotEmpty() }?.let { runCatching { JSONObject(it) }.getOrNull() }
@@ -775,12 +1168,17 @@ class ReaderActivity : Activity(), AiHost {
                 }
             }
             updateStatus()
+            if (readAloudOnLoad) {
+                readAloudOnLoad = false
+                startReadAloud()
+            }
         }
 
         @JavascriptInterface
         fun onTap() = runOnUiThread {
             when {
                 ai.isOpen -> ai.close()
+                glossCard.visibility == View.VISIBLE -> hideWordCard()
                 stylePanel.visibility == View.VISIBLE -> stylePanel.visibility = View.GONE
                 else -> setBarsVisible(topBar.visibility != View.VISIBLE)
             }
@@ -792,6 +1190,28 @@ class ReaderActivity : Activity(), AiHost {
         @JavascriptInterface
         fun onSelectionChanged(active: Boolean, top: Int, bottom: Int) = runOnUiThread {
             if (active) showSelectionBar(top, bottom) else hideSelectionBar()
+        }
+
+        @JavascriptInterface
+        fun onWordTap(json: String) = runOnUiThread {
+            val o = runCatching { JSONObject(json) }.getOrNull() ?: return@runOnUiThread
+            val word = o.optString("word").trim()
+            if (word.isEmpty()) return@runOnUiThread
+            if (ai.isOpen || stylePanel.visibility == View.VISIBLE) {
+                // The tap closes what's open, as elsewhere on the page.
+                if (ai.isOpen) ai.close() else stylePanel.visibility = View.GONE
+                web.evaluateJavascript("window.reader && reader.clearTap()", null)
+                return@runOnUiThread
+            }
+            setBarsVisible(false)
+            showWordCard(TappedWord(word, o.optString("form").ifBlank { WordStore.normalize(word) }, o.optString("sentence"),
+                o.optInt("top"), o.optInt("bottom"), o.optInt("occurrence")))
+        }
+
+        @JavascriptInterface
+        fun onWordStats(total: Int, fresh: Int, learning: Int) = runOnUiThread {
+            wordStats = WordStats(total, fresh, learning)
+            updateStatus()
         }
 
         @JavascriptInterface

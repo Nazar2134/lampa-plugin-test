@@ -19,9 +19,10 @@ data class WordSource(
 object Vocabulary {
     /**
      * Saves a word straight away, then asks the AI (if a key is set) for a translation and a short explanation
-     * and fills them in. [explanation] is kept as is when given, e.g. a Vocabulary answer already on screen.
+     * and fills them in. [explanation] and [translation] are kept as is when given, e.g. a Vocabulary answer already
+     * on screen or a word card; with both given there is nothing to ask.
      */
-    fun save(activity: Activity, source: WordSource, explanation: String = "", onSaved: (VocabEntry) -> Unit = {}) {
+    fun save(activity: Activity, source: WordSource, explanation: String = "", translation: String = "", onSaved: (VocabEntry) -> Unit = {}) {
         val db = ReaderDb.get(activity)
         val word = source.word.trim().trim('.', ',', ';', ':', '!', '?', '«', '»', '"', '“', '”', '„', '(', ')').take(200)
         if (word.isEmpty()) return
@@ -30,7 +31,7 @@ object Vocabulary {
             return
         }
         val entry = VocabEntry(
-            word = word, sentence = source.sentence.take(1000), explanation = explanation, bookId = source.bookId,
+            word = word, sentence = source.sentence.take(1000), translation = translation, explanation = explanation, bookId = source.bookId,
             bookTitle = source.bookTitle, chapter = source.chapter, chapterTitle = source.chapterTitle, anchorOccurrence = source.occurrence,
         )
         val saved = entry.copy(id = db.addVocab(entry))
@@ -38,7 +39,7 @@ object Vocabulary {
         onSaved(saved)
 
         val settings = Prefs(activity).load()
-        if (Ai.key(settings).isBlank()) return
+        if (Ai.key(settings).isBlank() || (translation.isNotBlank() && explanation.isNotBlank())) return
         thread(isDaemon = true) {
             runCatching {
                 val reply = StringBuilder()
