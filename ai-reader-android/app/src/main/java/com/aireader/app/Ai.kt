@@ -71,6 +71,12 @@ object Ai {
         error("unreachable")
     }
 
+    /** The key is missing, wrong or revoked: the user needs to enter another one. */
+    fun isKeyProblem(provider: AiProvider, e: Throwable): Boolean = e is ApiException && when (provider) {
+        AiProvider.DEEPSEEK -> e.code == 401
+        AiProvider.GEMINI -> (e.code == 400 || e.code == 401 || e.code == 403) && "API key" in e.message.orEmpty()
+    }
+
     fun describe(provider: AiProvider, e: Throwable) = when (provider) {
         AiProvider.GEMINI -> Gemini.describe(e)
         AiProvider.DEEPSEEK -> DeepSeek.describe(e)

@@ -54,8 +54,14 @@ has an action row:
 - **☆ Save word** adds the selection to your vocabulary.
 - **✨ in the toolbar** opens a chat about the book ("Who is Jonas?", "Why did she go to the shed?"),
   saved per book. **New chat** starts over.
-- **Ask Claude ↗ / Ask ChatGPT ↗** hand the question to those apps (or websites) with it pre-filled,
-  using your own free account.
+- **Answers stay in the reader**, as a chat: your messages on the right, answers on the left.
+  - Tap the handle at the top to expand the chat to full screen.
+  - If no key is saved yet, or a key is rejected, the panel asks for one right there (DeepSeek or free
+    Gemini) and then answers.
+  - Items that other apps add to the text-selection menu (ChatGPT, Claude, translators) are hidden in the
+    reader, so selecting text never jumps to another app.
+- **Ask Claude ↗ / Ask ChatGPT ↗** appear only when the reader can't answer itself (no key, or an error).
+  They hand the question to those apps (or websites) with it pre-filled, using your own free account.
 
 ### How the AI sees the book
 

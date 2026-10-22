@@ -235,9 +235,25 @@
         android:elevation="16dp"
         android:orientation="vertical"
         android:paddingHorizontal="18dp"
-        android:paddingTop="12dp"
+        android:paddingTop="2dp"
         android:paddingBottom="6dp"
         android:visibility="gone">
+
+        <!-- Tap or drag up to expand the chat to full screen -->
+        <FrameLayout
+            android:id="@+id/aiGrabber"
+            android:layout_width="match_parent"
+            android:layout_height="22dp"
+            android:clickable="true"
+            android:contentDescription="Expand or shrink the chat"
+            android:focusable="true">
+
+            <View
+                android:id="@+id/aiGrabberBar"
+                android:layout_width="40dp"
+                android:layout_height="4dp"
+                android:layout_gravity="center" />
+        </FrameLayout>
 
         <LinearLayout
             android:layout_width="match_parent"
@@ -313,13 +329,12 @@
                 android:layout_height="wrap_content"
                 android:orientation="vertical">
 
-                <TextView
-                    android:id="@+id/aiAnswer"
+                <!-- The conversation: your messages on the right, answers on the left -->
+                <LinearLayout
+                    android:id="@+id/aiMessages"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:lineSpacingMultiplier="1.25"
-                    android:textIsSelectable="true"
-                    android:textSize="16sp" />
+                    android:orientation="vertical" />
 
                 <ProgressBar
                     android:id="@+id/aiProgress"
@@ -327,6 +342,78 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp" />
+
+                <!-- One-time setup when no AI key is saved, so answers stay in the reader -->
+                <LinearLayout
+                    android:id="@+id/aiSetup"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:orientation="vertical"
+                    android:padding="14dp"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:id="@+id/aiSetupTitle"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Get answers right here in the reader"
+                        android:textSize="16sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/aiSetupError"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:textSize="14sp"
+                        android:visibility="gone" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="40dp"
+                        android:layout_marginTop="10dp">
+
+                        <TextView android:id="@+id/aiSetupDeepseek" style="@style/SelectionScope" android:text="DeepSeek" />
+                        <TextView android:id="@+id/aiSetupGemini" style="@style/SelectionScope" android:text="Gemini (free)" />
+                    </LinearLayout>
+
+                    <TextView
+                        android:id="@+id/aiSetupInfo"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:lineSpacingMultiplier="1.2"
+                        android:textSize="14sp" />
+
+                    <TextView
+                        android:id="@+id/aiSetupLink"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:paddingVertical="8dp"
+                        android:textSize="14sp" />
+
+                    <EditText
+                        android:id="@+id/aiSetupKey"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:hint="Paste your API key"
+                        android:importantForAutofill="no"
+                        android:inputType="textPassword"
+                        android:padding="12dp"
+                        android:singleLine="true"
+                        android:textSize="15sp" />
+
+                    <Button
+                        android:id="@+id/aiSetupSave"
+                        android:layout_width="match_parent"
+                        android:layout_height="46dp"
+                        android:layout_marginTop="10dp"
+                        android:background="@drawable/button_bg"
+                        android:text="Save and answer"
+                        android:textAllCaps="false"
+                        android:textColor="#FFFFFF" />
+                </LinearLayout>
 
                 <Button
                     android:id="@+id/aiSettings"
@@ -377,6 +464,7 @@
             android:layout_height="wrap_content"
             android:gravity="center_vertical">
 
+            <!-- Only shown when the reader can't answer itself (no key, or an error) -->
             <Button
                 android:id="@+id/aiClaude"
                 style="?android:attr/borderlessButtonStyle"

@@ -25,6 +25,7 @@ import java.io.File
 
 /** The reader's AI panel end to end, against a mock DeepSeek server: what is sent, what is shown, what is kept. */
 @RunWith(RobolectricTestRunner::class)
+@org.robolectric.annotation.GraphicsMode(org.robolectric.annotation.GraphicsMode.Mode.NATIVE)
 @Config(sdk = [35], qualifiers = "w384dp-h832dp-xxhdpi")
 class AiPanelTest {
     private val context: Context = RuntimeEnvironment.getApplication()
@@ -71,7 +72,16 @@ class AiPanelTest {
         }
     }
 
-    private fun shown() = activity.findViewById<TextView>(R.id.aiAnswer).text.toString()
+    private fun shown() = ai.shownText()
+
+    private fun capture(name: String) {
+        shadowOf(Looper.getMainLooper()).idle()
+        val view = activity.window.decorView
+        val bitmap = android.graphics.Bitmap.createBitmap(view.width, view.height, android.graphics.Bitmap.Config.ARGB_8888)
+        view.draw(android.graphics.Canvas(bitmap))
+        File("build/screens").mkdirs()
+        File("build/screens/$name.png").outputStream().use { bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+    }
     private fun sentMessages() = JSONObject(server.last.body).getJSONArray("messages")
     private fun lastUserMessage(): String { val m = sentMessages(); return m.getJSONObject(m.length() - 1).getString("content") }
 
@@ -192,6 +202,89 @@ class AiPanelTest {
         assertEquals("Ein Schlüssel.", shown())
         assertEquals("gemini-3.5-flash-lite", Prefs(context).load().geminiModel)
         assertTrue(server.requests.last().line.contains("/models/gemini-3.5-flash-lite:streamGenerateContent"))
+    }
+
+    @Test
+    fun withoutAKeyTheKeyIsEnteredInThePanelAndTheAnswerStaysHere() {
+        Prefs(context).save(AppSettings(provider = AiProvider.DEEPSEEK, deepseekKey = "", language = "Ukrainian"))
+        ai.openForSelection(AiAction.EXPLAIN, shed)
+        settle()
+        assertEquals("nothing is sent without a key", 0, server.requests.size)
+        assertEquals(View.VISIBLE, activity.findViewById<View>(R.id.aiSetup).visibility)
+        assertEquals("the other apps are offered only now", View.VISIBLE, activity.findViewById<View>(R.id.aiClaude).visibility)
+        capture("chat-setup")
+
+        server.queue += answer("Ключ, який Марта знайшла раніше.")
+        activity.findViewById<EditText>(R.id.aiSetupKey).setText("sk-new")
+        activity.findViewById<View>(R.id.aiSetupSave).performClick()
+        settle()
+        assertEquals("Bearer sk-new", server.last.headers["authorization"])
+        assertEquals("sk-new", Prefs(context).load().deepseekKey)
+        assertEquals("Ключ, який Марта знайшла раніше.", shown())
+        assertEquals(View.GONE, activity.findViewById<View>(R.id.aiSetup).visibility)
+        assertEquals("answers stay in the reader", View.GONE, activity.findViewById<View>(R.id.aiClaude).visibility)
+        assertEquals(View.GONE, activity.findViewById<View>(R.id.aiChatgpt).visibility)
+    }
+
+    @Test
+    fun aRejectedKeyIsAskedForAgain() {
+        server.fallback = MockServer.Response(401, """{"error":{"message":"Authentication Fails","type":"authentication_error"}}""", "application/json")
+        ai.openForSelection(AiAction.TRANSLATE, shed)
+        settle()
+        assertEquals(View.VISIBLE, activity.findViewById<View>(R.id.aiSetup).visibility)
+        assertTrue(activity.findViewById<TextView>(R.id.aiSetupError).text.toString().contains("rejected"))
+        server.fallback = answer("brass key → латунний ключ")
+        activity.findViewById<View>(R.id.aiSetupGemini).performClick()
+        activity.findViewById<View>(R.id.aiSetupDeepseek).performClick()
+        activity.findViewById<EditText>(R.id.aiSetupKey).setText("sk-fixed")
+        activity.findViewById<View>(R.id.aiSetupSave).performClick()
+        settle()
+        assertEquals("brass key → латунний ключ", shown())
+    }
+
+    @Test
+    fun conversationIsShownAsChatMessages() {
+        server.queue += answer("Under the stone owl (Ch. 1).")
+        ai.openForSelection(AiAction.ASK, shed)
+        settle()
+        activity.findViewById<EditText>(R.id.aiInput).setText("Where did Marta find it?")
+        activity.findViewById<View>(R.id.aiSend).performClick()
+        settle()
+        val list = activity.findViewById<android.widget.LinearLayout>(R.id.aiMessages)
+        assertEquals(2, list.childCount)
+        val question = list.getChildAt(0) as TextView
+        val reply = list.getChildAt(1) as TextView
+        assertEquals("Where did Marta find it?", question.text.toString())
+        assertEquals("your message on the right", android.view.Gravity.END, (question.layoutParams as android.widget.LinearLayout.LayoutParams).gravity)
+        assertEquals("Under the stone owl (Ch. 1).", reply.text.toString())
+        assertEquals(android.view.Gravity.START, (reply.layoutParams as android.widget.LinearLayout.LayoutParams).gravity)
+        assertEquals(View.VISIBLE, activity.findViewById<View>(R.id.aiCopy).visibility)
+        capture("chat-conversation")
+    }
+
+    @Test
+    fun theChatExpandsToFullScreen() {
+        server.fallback = answer("x")
+        ai.openForSelection(AiAction.EXPLAIN, shed)
+        settle()
+        val panel = activity.findViewById<View>(R.id.aiPanel)
+        val normal = panel.layoutParams.height
+        activity.findViewById<View>(R.id.aiGrabber).performClick()
+        assertTrue("${panel.layoutParams.height} > $normal", panel.layoutParams.height > normal)
+        activity.findViewById<View>(R.id.aiGrabber).performClick()
+        assertEquals(normal, panel.layoutParams.height)
+    }
+
+    @Test
+    fun selectionMenuHidesOtherAppsItems() {
+        val menu = org.robolectric.fakes.RoboMenu(context)
+        menu.add(0, 1, 0, "Copy")
+        menu.add(0, 2, 1, "ChatGPT").intent = Intent(Intent.ACTION_PROCESS_TEXT).setPackage("com.openai.chatgpt")
+        menu.add(0, 3, 2, "Claude").intent = Intent(Intent.ACTION_PROCESS_TEXT).setPackage("com.anthropic.claude")
+        ReaderWebView.hideOtherApps(menu)
+        assertTrue(menu.findItem(1).isVisible)
+        assertFalse(menu.findItem(2).isVisible)
+        assertFalse(menu.findItem(3).isVisible)
     }
 
     @Test

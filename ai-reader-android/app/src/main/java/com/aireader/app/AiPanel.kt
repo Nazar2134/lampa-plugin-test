@@ -49,7 +49,7 @@ class AiPanel(private val activity: Activity, private val host: AiHost) {
     private val saveWord: TextView = activity.findViewById(R.id.aiSaveWord)
     private val newChat: TextView = activity.findViewById(R.id.aiNewChat)
     private val status: TextView = activity.findViewById(R.id.aiStatus)
-    private val answer: TextView = activity.findViewById(R.id.aiAnswer)
+    private val messages: LinearLayout = activity.findViewById(R.id.aiMessages)
     private val scroll: ScrollView = activity.findViewById(R.id.aiScroll)
     private val progress: ProgressBar = activity.findViewById(R.id.aiProgress)
     private val openSettings: Button = activity.findViewById(R.id.aiSettings)
@@ -59,12 +59,30 @@ class AiPanel(private val activity: Activity, private val host: AiHost) {
     private val claude: Button = activity.findViewById(R.id.aiClaude)
     private val chatgpt: Button = activity.findViewById(R.id.aiChatgpt)
     private val copy: Button = activity.findViewById(R.id.aiCopy)
+    private val grabber: View = activity.findViewById(R.id.aiGrabber)
+    private val setup: LinearLayout = activity.findViewById(R.id.aiSetup)
+    private val setupError: TextView = activity.findViewById(R.id.aiSetupError)
+    private val setupDeepseek: TextView = activity.findViewById(R.id.aiSetupDeepseek)
+    private val setupGemini: TextView = activity.findViewById(R.id.aiSetupGemini)
+    private val setupInfo: TextView = activity.findViewById(R.id.aiSetupInfo)
+    private val setupLink: TextView = activity.findViewById(R.id.aiSetupLink)
+    private val setupKey: EditText = activity.findViewById(R.id.aiSetupKey)
 
     private val db = ReaderDb.get(activity)
     private val main = Handler(Looper.getMainLooper())
     /** What was sent to the AI, turn by turn. The selection material stays in the first turn. */
     private val history = ArrayList<Turn>()
-    private val transcript = StringBuilder()
+
+    /** What the panel shows: your messages, the AI's answers, and small notes (errors, hints). */
+    private enum class Kind { USER, AI, NOTE }
+    private class Bubble(val kind: Kind, val text: StringBuilder)
+    private val bubbles = ArrayList<Bubble>()
+    /** The request to repeat once a key has been entered in the panel. */
+    private var pendingRequest: (() -> Unit)? = null
+    private var setupProvider = AiProvider.DEEPSEEK
+    /** True when the last request couldn't be answered here; only then are the Claude/ChatGPT hand-offs offered. */
+    private var cantAnswer = false
+    private var expanded = false
     private var action = AiAction.EXPLAIN
     private var selection: Selection? = null
     private var pageText = ""
@@ -91,7 +109,7 @@ class AiPanel(private val activity: Activity, private val host: AiHost) {
             if (isOpen) {
                 val top = insets.getInsetsIgnoringVisibility(WindowInsets.Type.statusBars()).top
                 val screen = (v.parent as View).height
-                val height = if (ime > 0) screen - top - dp(8) else (screen * 0.62).toInt()
+                val height = if (ime > 0 || expanded) screen - top - dp(8) else (screen * 0.62).toInt()
                 if (height > 0 && v.layoutParams.height != height) v.layoutParams = v.layoutParams.apply { this.height = height }
             }
             insets
@@ -103,9 +121,18 @@ class AiPanel(private val activity: Activity, private val host: AiHost) {
         claude.setOnClickListener { handoff(Handoff.Target.CLAUDE) }
         chatgpt.setOnClickListener { handoff(Handoff.Target.CHATGPT) }
         copy.setOnClickListener {
-            activity.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Answer", answer.text.toString()))
+            val last = bubbles.lastOrNull { it.kind == Kind.AI }?.text?.toString() ?: return@setOnClickListener
+            activity.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Answer", last))
             Toast.makeText(activity, "Copied", Toast.LENGTH_SHORT).show()
         }
+        grabber.setOnClickListener { setExpanded(!expanded) }
+        setupDeepseek.setOnClickListener { chooseSetupProvider(AiProvider.DEEPSEEK) }
+        setupGemini.setOnClickListener { chooseSetupProvider(AiProvider.GEMINI) }
+        setupLink.setOnClickListener {
+            val url = if (setupProvider == AiProvider.DEEPSEEK) "https://platform.deepseek.com/api_keys" else "https://aistudio.google.com/apikey"
+            activity.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+        }
+        activity.findViewById<View>(R.id.aiSetupSave).setOnClickListener { saveKeyAndRetry() }
         openSettings.setOnClickListener { activity.startActivity(Intent(activity, SettingsActivity::class.java)) }
         languagePill.setOnClickListener { chooseLanguage() }
         levelPill.setOnClickListener { chooseLevel() }
@@ -141,8 +168,25 @@ class AiPanel(private val activity: Activity, private val host: AiHost) {
         quote.background = field(t)
         input.background = field(t)
         quote.setTextColor(t.muted)
-        answer.setTextColor(t.fg)
         status.setTextColor(t.muted)
+        activity.findViewById<View>(R.id.aiGrabberBar).background = GradientDrawable().apply {
+            setColor((t.muted and 0x00FFFFFF) or 0x66000000)
+            cornerRadius = 2 * density
+        }
+        setup.background = field(t, radius = 16f)
+        setupKey.background = GradientDrawable().apply {
+            setColor(if (t.isDark) 0x22FFFFFF else 0xFFFFFFFF.toInt())
+            cornerRadius = 10 * density
+        }
+        setupKey.setTextColor(t.fg)
+        setupKey.typeface = android.graphics.Typeface.DEFAULT
+        setupKey.setHintTextColor(t.muted)
+        activity.findViewById<TextView>(R.id.aiSetupTitle).setTextColor(t.fg)
+        setupInfo.setTextColor(t.muted)
+        setupLink.setTextColor(t.accent)
+        setupError.setTextColor(0xFFC0392B.toInt())
+        activity.findViewById<Button>(R.id.aiSetupSave).backgroundTintList = ColorStateList.valueOf(t.accent)
+        styleSetupChoices()
         input.setTextColor(t.fg)
         input.setHintTextColor(t.muted)
         close.imageTintList = ColorStateList.valueOf(t.muted)
@@ -197,8 +241,7 @@ class AiPanel(private val activity: Activity, private val host: AiHost) {
         val saved = db.chat(host.bookId).takeLast(20)
         for (m in saved) {
             history += Turn(m.fromUser, m.text)
-            if (m.fromUser) transcript.append(if (transcript.isEmpty()) "" else "\n\n---\n").append("**").append(m.text).append("**\n\n")
-            else transcript.append(m.text)
+            addBubble(if (m.fromUser) Kind.USER else Kind.AI, m.text)
         }
         if (saved.isNotEmpty()) lastQuestion = saved.lastOrNull { it.fromUser }?.text
         input.hint = "e.g. Who is Jonas? Why did she go to the shed?"
@@ -213,14 +256,26 @@ class AiPanel(private val activity: Activity, private val host: AiHost) {
         connection?.disconnect()
         hideKeyboard()
         panel.visibility = View.GONE
+        expanded = false
         onClosed?.invoke()
     }
 
     private fun show() {
-        val height = (activity.resources.displayMetrics.heightPixels * 0.62).toInt()
-        panel.layoutParams = panel.layoutParams.apply { this.height = height }
+        panel.layoutParams = panel.layoutParams.apply { this.height = panelHeight() }
         panel.visibility = View.VISIBLE
         panel.requestApplyInsets()
+    }
+
+    private fun panelHeight(): Int {
+        val screen = (panel.parent as? View)?.height?.takeIf { it > 0 } ?: activity.resources.displayMetrics.heightPixels
+        val top = panel.rootWindowInsets?.getInsetsIgnoringVisibility(WindowInsets.Type.statusBars())?.top ?: 0
+        return if (expanded) screen - top - dp(8) else (screen * 0.62).toInt()
+    }
+
+    /** Full screen for longer conversations; tap the handle again to go back to reading. */
+    fun setExpanded(value: Boolean) {
+        expanded = value
+        if (isOpen) panel.layoutParams = panel.layoutParams.apply { height = panelHeight() }
     }
 
     private fun resetConversation() {
@@ -228,8 +283,11 @@ class AiPanel(private val activity: Activity, private val host: AiHost) {
         connection?.disconnect()
         history.clear()
         sent.clear()
-        transcript.setLength(0)
+        bubbles.clear()
         lastQuestion = null
+        pendingRequest = null
+        cantAnswer = false
+        setup.visibility = View.GONE
         input.text.clear()
         input.hint = "Ask a follow-up…"
         openSettings.visibility = View.GONE
@@ -257,8 +315,11 @@ class AiPanel(private val activity: Activity, private val host: AiHost) {
         action = newAction
         history.clear()
         sent.clear()
-        transcript.setLength(0)
+        bubbles.clear()
         lastQuestion = null
+        pendingRequest = null
+        cantAnswer = false
+        setup.visibility = View.GONE
         status.visibility = View.GONE
         openSettings.visibility = View.GONE
         setBusy(false)
@@ -281,7 +342,7 @@ class AiPanel(private val activity: Activity, private val host: AiHost) {
         hideKeyboard()
         val previous = lastQuestion
         lastQuestion = question
-        transcript.append(if (transcript.isEmpty()) "" else "\n\n---\n").append("**").append(question).append("**\n\n")
+        addBubble(Kind.USER, question)
         render()
         if (action == AiAction.CHAT) db.addChat(host.bookId, ChatMessage(true, question))
         request(question, useCache = false, sel = selection, previousQuestion = previous)
@@ -295,15 +356,11 @@ class AiPanel(private val activity: Activity, private val host: AiHost) {
         val settings = Prefs(activity).load()
         val provider = settings.provider
         if (Ai.key(settings).isBlank()) {
-            transcript.append(
-                if (provider == AiProvider.DEEPSEEK) "Add your DeepSeek API key in Settings to get answers right here.\n\n"
-                else "To get answers right here, add a free Gemini key in Settings. It takes a minute and needs no card.\n\n"
-            ).append("Or tap **Ask Claude** or **Ask ChatGPT** below to ask in those free apps.")
-            openSettings.visibility = View.VISIBLE
-            if (question != null && action == AiAction.CHAT) history += Turn(true, question)
-            render()
+            showSetup(null) { request(question, useCache, sel, previousQuestion) }
             return
         }
+        cantAnswer = false
+        setup.visibility = View.GONE
         setBusy(true)
         val gen = ++generation
         val currentAction = action
@@ -361,7 +418,7 @@ class AiPanel(private val activity: Activity, private val host: AiHost) {
                     if (gen != generation) return@post
                     history += Turn(true, userTurn)
                     history += Turn(false, cached)
-                    transcript.append(cached)
+                    addBubble(Kind.AI, cached)
                     status.text = "Saved answer. Tap ↻ for a new one."
                     status.visibility = View.VISIBLE
                     setBusy(false)
@@ -378,7 +435,7 @@ class AiPanel(private val activity: Activity, private val host: AiHost) {
                     reply.append(piece)
                     main.post {
                         if (gen != generation) return@post
-                        transcript.append(piece)
+                        appendToAnswer(piece)
                         render()
                     }
                 }
@@ -390,6 +447,11 @@ class AiPanel(private val activity: Activity, private val host: AiHost) {
                 }
                 if (error == null && cacheKey != null && reply.isNotEmpty()) db.cache(cacheKey, reply.toString())
             } catch (e: ApiException) {
+                if (Ai.isKeyProblem(provider, e) && reply.isEmpty()) {
+                    main.post { if (gen == generation) { setBusy(false); showSetup(Ai.describe(provider, e)) { request(question, useCache, sel, previousQuestion) } } }
+                    connection = null
+                    return@thread
+                }
                 if (provider == AiProvider.GEMINI && e.code == 404 && !retried && reply.isEmpty() && gen == generation) {
                     // The saved model name no longer exists (Google renames models): switch to the current one and ask again.
                     val replacement = runCatching { Gemini.check(settings.geminiKey, settings.geminiModel) }.getOrNull()
@@ -414,8 +476,9 @@ class AiPanel(private val activity: Activity, private val host: AiHost) {
                     if (currentAction == AiAction.CHAT) db.addChat(host.bookId, ChatMessage(false, reply.toString()))
                 }
                 if (error != null) {
-                    transcript.append(if (reply.isEmpty()) "" else "\n\n").append("_").append(error).append("_")
+                    addBubble(Kind.NOTE, error)
                     if ("Settings" in error) openSettings.visibility = View.VISIBLE
+                    if (reply.isEmpty()) cantAnswer = true
                 }
                 setBusy(false)
                 render()
@@ -485,11 +548,137 @@ class AiPanel(private val activity: Activity, private val host: AiHost) {
         Handoff.send(activity, target, Prompts.handoff(host.bookInfo(), Prefs(activity).load(), request, pageText))
     }
 
+    private fun addBubble(kind: Kind, text: String) {
+        bubbles += Bubble(kind, StringBuilder(text))
+    }
+
+    private fun appendToAnswer(piece: String) {
+        val last = bubbles.lastOrNull()
+        if (last != null && last.kind == Kind.AI) last.text.append(piece) else addBubble(Kind.AI, piece)
+    }
+
+    /** Everything shown in the conversation, for copying and tests. */
+    fun shownText(): String = bubbles.joinToString("\n\n") { it.text }
+
     private fun render() {
         val atBottom = !scroll.canScrollVertically(1)
-        answer.text = SimpleMarkdown.render(transcript.toString(), theme.accent, theme.muted)
-        answer.visibility = if (transcript.isEmpty()) View.GONE else View.VISIBLE
-        if (atBottom && lastQuestion != null) scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
+        val density = activity.resources.displayMetrics.density
+        while (messages.childCount > bubbles.size) messages.removeViewAt(messages.childCount - 1)
+        bubbles.forEachIndexed { i, b ->
+            val view = (messages.getChildAt(i) as? TextView) ?: TextView(activity).apply {
+                setTextIsSelectable(true)
+                messages.addView(this)
+            }
+            val params = LinearLayout.LayoutParams(
+                if (b.kind == Kind.USER) LinearLayout.LayoutParams.WRAP_CONTENT else LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                topMargin = if (i == 0) 0 else dp(10)
+                gravity = if (b.kind == Kind.USER) android.view.Gravity.END else android.view.Gravity.START
+                if (b.kind == Kind.USER) marginStart = dp(48)
+            }
+            view.layoutParams = params
+            when (b.kind) {
+                Kind.USER -> {
+                    view.text = b.text
+                    view.textSize = 15f
+                    view.setTextColor(theme.fg)
+                    view.setPadding(dp(14), dp(9), dp(14), dp(9))
+                    view.background = GradientDrawable().apply {
+                        setColor((theme.accent and 0x00FFFFFF) or 0x2E000000)
+                        cornerRadii = floatArrayOf(18 * density, 18 * density, 18 * density, 18 * density, 4 * density, 4 * density, 18 * density, 18 * density)
+                    }
+                }
+                Kind.AI -> {
+                    view.text = SimpleMarkdown.render(b.text.toString(), theme.accent, theme.muted)
+                    view.textSize = 16f
+                    view.setLineSpacing(0f, 1.25f)
+                    view.setTextColor(theme.fg)
+                    view.setPadding(dp(14), dp(10), dp(14), dp(10))
+                    view.background = GradientDrawable().apply {
+                        setColor((theme.fg and 0x00FFFFFF) or 0x0D000000)
+                        cornerRadii = floatArrayOf(4 * density, 4 * density, 18 * density, 18 * density, 18 * density, 18 * density, 18 * density, 18 * density)
+                    }
+                }
+                Kind.NOTE -> {
+                    view.text = b.text
+                    view.textSize = 13f
+                    view.setTypeface(null, android.graphics.Typeface.ITALIC)
+                    view.setTextColor(theme.muted)
+                    view.setPadding(dp(4), 0, dp(4), 0)
+                    view.background = null
+                }
+            }
+        }
+        messages.visibility = if (bubbles.isEmpty()) View.GONE else View.VISIBLE
+        val hasAnswer = bubbles.any { it.kind == Kind.AI }
+        copy.visibility = if (hasAnswer) View.VISIBLE else View.GONE
+        val handoff = if (cantAnswer || setup.visibility == View.VISIBLE) View.VISIBLE else View.GONE
+        claude.visibility = handoff
+        chatgpt.visibility = handoff
+        if (atBottom && (lastQuestion != null || bubbles.size > 1)) scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
+    }
+
+    // --- Key setup inside the panel ---
+
+    /** Asks for an API key right in the panel; [retry] repeats the request once it is saved. */
+    private fun showSetup(error: String?, retry: () -> Unit) {
+        pendingRequest = retry
+        cantAnswer = true
+        setupProvider = Prefs(activity).load().provider
+        setupError.text = error.orEmpty()
+        setupError.visibility = if (error.isNullOrBlank()) View.GONE else View.VISIBLE
+        setupKey.setText("")
+        setup.visibility = View.VISIBLE
+        styleSetupChoices()
+        // Full height so the whole form, including its button, is visible.
+        setExpanded(true)
+        render()
+        scroll.post { scroll.smoothScrollTo(0, setup.top) }
+    }
+
+    private fun chooseSetupProvider(p: AiProvider) {
+        setupProvider = p
+        styleSetupChoices()
+    }
+
+    private fun styleSetupChoices() {
+        val density = activity.resources.displayMetrics.density
+        for ((view, p) in listOf(setupDeepseek to AiProvider.DEEPSEEK, setupGemini to AiProvider.GEMINI)) {
+            val on = p == setupProvider
+            view.setTextColor(if (on) 0xFFFFFFFF.toInt() else theme.fg)
+            view.background = GradientDrawable().apply {
+                setColor(if (on) theme.accent else (theme.fg and 0x00FFFFFF) or 0x12000000)
+                cornerRadius = 14 * density
+            }
+        }
+        if (setupProvider == AiProvider.DEEPSEEK) {
+            setupInfo.text = "Paste your DeepSeek API key. Answers are paid from your DeepSeek balance; an explanation usually costs well under \$0.001."
+            setupLink.text = "Your keys: platform.deepseek.com →"
+        } else {
+            setupInfo.text = "Free: sign in to Google AI Studio, tap “Create API key”, and paste it here. No card needed; there are daily limits."
+            setupLink.text = "Get a free key: aistudio.google.com →"
+        }
+    }
+
+    private fun saveKeyAndRetry() {
+        val key = setupKey.text.toString().trim()
+        if (key.isEmpty()) {
+            setupError.text = "Paste the key first."
+            setupError.visibility = View.VISIBLE
+            return
+        }
+        val prefs = Prefs(activity)
+        val current = prefs.load()
+        prefs.save(if (setupProvider == AiProvider.DEEPSEEK) current.copy(provider = AiProvider.DEEPSEEK, deepseekKey = key) else current.copy(provider = AiProvider.GEMINI, geminiKey = key))
+        hideKeyboard()
+        setup.visibility = View.GONE
+        cantAnswer = false
+        setExpanded(false)
+        val retry = pendingRequest
+        pendingRequest = null
+        render()
+        retry?.invoke()
     }
 
     private fun setBusy(value: Boolean) {

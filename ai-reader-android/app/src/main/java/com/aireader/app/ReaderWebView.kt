@@ -22,6 +22,7 @@ class ReaderWebView(context: Context, attrs: AttributeSet?) : WebView(context, a
         super.startActionMode(callback?.let(::wrap))
 
     private fun addItems(menu: Menu): Boolean {
+        hideOtherApps(menu)
         var added = false
         SelectionAction.entries.forEachIndexed { order, action ->
             val id = FIRST_ID + order
@@ -62,7 +63,18 @@ class ReaderWebView(context: Context, attrs: AttributeSet?) : WebView(context, a
         }
     }
 
-    private companion object {
-        const val FIRST_ID = 0x7f0a7001
+    companion object {
+        private const val FIRST_ID = 0x7f0a7001
+
+        /**
+         * Other apps (ChatGPT, Claude, translators…) add "process text" items to every selection menu, and
+         * those take the reader out of the book. The reader's own actions answer in place, so hide them.
+         */
+        fun hideOtherApps(menu: Menu) {
+            for (i in 0 until menu.size()) {
+                val item = menu.getItem(i)
+                if (item.intent?.action == android.content.Intent.ACTION_PROCESS_TEXT) item.isVisible = false
+            }
+        }
     }
 }

@@ -193,13 +193,14 @@ class ScreenshotTest {
         assertEquals(1.6f, Prefs(context).load().lineHeight, 0.001f)
         activity.findViewById<View>(R.id.style).performClick()
 
-        // AI panel without a key: explains how to add one, offers the free hand-off buttons.
+        // AI panel without a key.
         val ai = activity.javaClass.getDeclaredField("ai").apply { isAccessible = true }.get(activity) as AiPanel
         ai.openForSelection(AiAction.VOCABULARY, Selection("apprentice", "He had become a clockmaker's apprentice…", "He had become a clockmaker's apprentice in a narrow shop near the harbour.", 1, 0))
         idle()
         assertTrue(ai.isOpen)
-        val answer = activity.findViewById<android.widget.TextView>(R.id.aiAnswer).text.toString()
-        assertTrue(answer, answer.startsWith("Add your DeepSeek API key in Settings"))
+        // No key yet: the key can be pasted right in the panel; the other apps are only a fallback.
+        assertEquals(View.VISIBLE, activity.findViewById<View>(R.id.aiSetup).visibility)
+        assertEquals(View.VISIBLE, activity.findViewById<View>(R.id.aiClaude).visibility)
         assertEquals(View.VISIBLE, activity.findViewById<View>(R.id.aiSaveWord).visibility)
         capture(activity, "reader-ai-panel")
 
