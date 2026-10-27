@@ -46,7 +46,7 @@
             </intent-filter>
         </activity>
 
-        <!-- Same popup, in its own task, for the floating button and the Quick Settings tile. -->
+        <!-- Same popup, in its own task, for the floating button (full flavor) and the Quick Settings tile. -->
         <activity
             android:name=".FloatingTranslateActivity"
             android:excludeFromRecents="true"
@@ -56,18 +56,6 @@
             android:theme="@style/PopupTheme"
             android:windowSoftInputMode="stateHidden|adjustResize" />
 
-        <service
-            android:name=".TapService"
-            android:exported="true"
-            android:label="@string/tap_service_label"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
-            <intent-filter>
-                <action android:name="android.accessibilityservice.AccessibilityService" />
-            </intent-filter>
-            <meta-data
-                android:name="android.accessibilityservice"
-                android:resource="@xml/tap_service" />
-        </service>
 
         <service
             android:name=".ClipboardTileService"

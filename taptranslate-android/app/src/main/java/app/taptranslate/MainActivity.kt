@@ -77,6 +77,7 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.open_app_info).setOnClickListener {
             startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null)))
         }
+        findViewById<View>(R.id.tap_section).visibility = if (BuildConfig.TAP_TO_TRANSLATE) View.VISIBLE else View.GONE
         findViewById<Switch>(R.id.bubble_switch).apply {
             isChecked = prefs.bubbleEnabled
             setOnCheckedChangeListener { _, checked -> prefs.bubbleEnabled = checked }
@@ -137,8 +138,9 @@ class MainActivity : Activity() {
     }
 
     private fun isTapServiceEnabled(): Boolean {
+        if (!BuildConfig.TAP_TO_TRANSLATE) return false
         val enabled = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES).orEmpty()
-        val me = ComponentName(this, TapService::class.java)
+        val me = ComponentName(packageName, "$packageName.TapService")
         return enabled.split(':').any { ComponentName.unflattenFromString(it) == me }
     }
 }

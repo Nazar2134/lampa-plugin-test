@@ -160,8 +160,10 @@
                 android:text="@string/try_button" />
         </LinearLayout>
 
-        <!-- 5 · Tap any word -->
-        <LinearLayout style="@style/Section">
+        <!-- 5 · Tap any word (full flavor only) -->
+        <LinearLayout
+            android:id="@+id/tap_section"
+            style="@style/Section">
 
             <TextView style="@style/SectionTitle" android:text="@string/tap_title" />
 

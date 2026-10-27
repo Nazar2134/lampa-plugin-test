@@ -13,8 +13,8 @@ android {
         applicationId = "app.taptranslate"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
     }
 
     signingConfigs {
@@ -37,6 +37,25 @@ android {
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
             signingConfig = signingConfigs.getByName("sideload")
+        }
+    }
+
+    buildFeatures {
+        buildConfig = true
+    }
+
+    // "lite" has no accessibility service: Play Protect blocks sideloaded apps that declare one.
+    // "full" adds the floating tap-any-word button.
+    flavorDimensions += "features"
+    productFlavors {
+        create("lite") {
+            dimension = "features"
+            versionNameSuffix = "-lite"
+            buildConfigField("boolean", "TAP_TO_TRANSLATE", "false")
+        }
+        create("full") {
+            dimension = "features"
+            buildConfigField("boolean", "TAP_TO_TRANSLATE", "true")
         }
     }
 

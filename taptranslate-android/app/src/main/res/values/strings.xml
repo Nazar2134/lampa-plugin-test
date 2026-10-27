@@ -26,7 +26,7 @@
     <string name="try_button">Translate this text</string>
 
     <string name="tap_title">5 · Tap any word, in any app</string>
-    <string name="tap_help">For text you can\'t select (buttons, menus, some apps), turn on the floating button. Tap it, then tap a word on screen.</string>
+    <string name="tap_help">For text you can\'t select (buttons, menus, some apps), turn on the floating button. Tap it, then tap a word on screen. Long-press it to translate what you copied.</string>
     <string name="open_accessibility">Turn on tap-to-translate</string>
     <string name="restricted_help">If Android says \"Restricted setting\": open App info → ⋮ (top right) → \"Allow restricted settings\", then try again.</string>
     <string name="open_app_info">Open app info</string>
@@ -35,7 +35,7 @@
     <string name="tap_off">Off</string>
 
     <string name="more_title">6 · More ways</string>
-    <string name="more_help">• Quick Settings: swipe down twice, tap ✎ (edit), and add the \"Translate clipboard\" tile.\n• Long-press the floating button to translate what you copied.\n• Share any text to \"AI Translate\".\n• In the translation popup, tap any word of the original text to look it up.</string>
+    <string name="more_help">• Quick Settings: swipe down twice, tap ✎ (edit), and add the \"Translate clipboard\" tile.\n• Share any text to \"AI Translate\".\n• In the translation popup, tap any word of the original text to look it up.</string>
 
     <string name="advanced_title">Advanced</string>
     <string name="base_url_label">API base URL</string>
