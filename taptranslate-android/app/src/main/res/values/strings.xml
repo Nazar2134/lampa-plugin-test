@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Tap Translate</string>
+    <string name="process_text_label">AI Translate</string>
+    <string name="tile_label">Translate clipboard</string>
+    <string name="tap_service_label">Tap Translate – tap any word</string>
+    <string name="tap_service_description">Shows a small floating button. Tap it, then tap any word on the screen to translate it with DeepSeek. Long-press the button to translate the clipboard. The app reads only the text under your finger, and only right after you tap the button; nothing is read or collected in the background.</string>
+    <string name="tagline">Translate any word in any app with DeepSeek: meaning, pronunciation and examples.</string>
+
+    <string name="key_title">1 · DeepSeek API key</string>
+    <string name="key_help">Create a key on the DeepSeek platform and paste it here. It is stored only on this phone.</string>
+    <string name="get_key">Get a key</string>
+    <string name="save_test">Save &amp; test</string>
+
+    <string name="lang_title">2 · Languages</string>
+    <string name="my_lang_label">Translate into (your language)</string>
+    <string name="other_lang_label">When the text is already in your language, translate into</string>
+
+    <string name="model_title">3 · Model</string>
+    <string name="model_chat">deepseek-chat: fast, best for everyday use</string>
+    <string name="model_reasoner">deepseek-reasoner: slower, more thorough</string>
+
+    <string name="try_title">4 · Try it</string>
+    <string name="try_help">Long-press a word below, then tap \"AI Translate\" in the menu that pops up. On Samsung it may be behind the ⋮ button.</string>
+    <string name="sample_text">The meeting was postponed because the manager was feeling under the weather.</string>
+    <string name="try_button">Translate this text</string>
+
+    <string name="tap_title">5 · Tap any word, in any app</string>
+    <string name="tap_help">For text you can\'t select (buttons, menus, some apps), turn on the floating button. Tap it, then tap a word on screen.</string>
+    <string name="open_accessibility">Turn on tap-to-translate</string>
+    <string name="restricted_help">If Android says \"Restricted setting\": open App info → ⋮ (top right) → \"Allow restricted settings\", then try again.</string>
+    <string name="open_app_info">Open app info</string>
+    <string name="bubble_switch">Show floating button</string>
+    <string name="tap_on">✓ On. Tap the floating button, then tap a word.</string>
+    <string name="tap_off">Off</string>
+
+    <string name="more_title">6 · More ways</string>
+    <string name="more_help">• Quick Settings: swipe down twice, tap ✎ (edit), and add the \"Translate clipboard\" tile.\n• Long-press the floating button to translate what you copied.\n• Share any text to \"AI Translate\".\n• In the translation popup, tap any word of the original text to look it up.</string>
+
+    <string name="advanced_title">Advanced</string>
+    <string name="base_url_label">API base URL</string>
+
+    <string name="translating">Translating…</string>
+    <string name="thinking">Thinking…</string>
+    <string name="translate_all">Translate the whole text</string>
+    <string name="pick_word">Tap any word above to translate it.</string>
+    <string name="need_key">Add your DeepSeek API key in settings first.</string>
+    <string name="open_settings">Settings</string>
+    <string name="replace">Replace</string>
+    <string name="copied">Copied</string>
+    <string name="clipboard_empty">The clipboard is empty. Copy some text first.</string>
+    <string name="reading_clipboard">Reading clipboard…</string>
+    <string name="no_text">No text received.</string>
+    <string name="empty_answer">DeepSeek returned an empty answer. Try again.</string>
+    <string name="choose_language">Translate into</string>
+    <string name="auto_detect">Auto</string>
+    <string name="speak">Speak (long-press: speak translation)</string>
+    <string name="copy">Copy translation (long-press: copy everything)</string>
+    <string name="close">Close</string>
+
+    <string name="pick_hint">Tap a word to translate   ✕</string>
+    <string name="no_text_here">No text found there</string>
+    <string name="bubble_description">Tap Translate: tap, then tap a word</string>
+</resources>
